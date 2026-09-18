@@ -857,6 +857,7 @@ struct setup
   double g71_3_delta;
   double g71_3_retract;
   bool g71_3_have_delta;
+  bool g71_3_have_retract;
   int g7x_skip_n_start;
   int g7x_skip_n_end;
   bool g7x_skip_active;

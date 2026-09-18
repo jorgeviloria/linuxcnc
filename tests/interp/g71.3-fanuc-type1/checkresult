@@ -1,7 +1,45 @@
-#!/bin/bash
-set -e
-result=${1:-result}
+#!/usr/bin/env python3
+"""Roughing feeds, skip of P-Q, then the post-profile marker."""
+import re
+import sys
 
-grep -q STRAIGHT_FEED "$result" || { echo "no roughing STRAIGHT_FEED in output"; exit 1; }
-grep -q '40.0000' "$result" || { echo "post-profile marker X40/Z40 missing (P-Q not skipped?)"; exit 1; }
-exit 0
+text = open(sys.argv[1] if len(sys.argv) > 1 else "result").read()
+if "STRAIGHT_FEED" not in text:
+    print("no roughing STRAIGHT_FEED in output")
+    sys.exit(1)
+if "40.0000" not in text:
+    print("post-profile marker X40/Z40 missing")
+    sys.exit(1)
+
+# After returning to the cycle start (X12 Z1), skip must not execute the
+# profile as ordinary motion. Next move should be the marker, not a feed
+# along Z at the profile X.
+motions = []
+for m in re.finditer(
+        r"STRAIGHT_(FEED|TRAVERSE)\(([-\d.]+),\s*[-\d.]+,\s*([-\d.]+)",
+        text):
+    motions.append((m.group(1), float(m.group(2)), float(m.group(3))))
+
+start_idx = None
+for i, (kind, x, z) in enumerate(motions):
+    if kind == "TRAVERSE" and abs(x - 12.0) < 1e-3 and abs(z - 1.0) < 1e-3:
+        start_idx = i
+if start_idx is None:
+    print("no return-to-start TRAVERSE(12,...,1) found")
+    sys.exit(1)
+i = start_idx + 1
+while i < len(motions):
+    kind, x, z = motions[i]
+    if kind == "TRAVERSE" and abs(x - 12.0) < 1e-3 and abs(z - 1.0) < 1e-3:
+        i += 1
+        continue
+    break
+else:
+    print("nothing after return-to-start")
+    sys.exit(1)
+kind, x, z = motions[i]
+if kind != "TRAVERSE" or abs(x - 40.0) > 1e-3 or abs(z - 40.0) > 1e-3:
+    print("P-Q not skipped: after return-to-start got %s X=%.4f Z=%.4f"
+          % (kind, x, z))
+    sys.exit(1)
+sys.exit(0)

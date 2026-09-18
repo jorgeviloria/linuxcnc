@@ -1,0 +1,11 @@
+;G71.3 Type I profile is not monotonic in X
+G18 G21 G8 F100
+G0 X12 Z1
+G71.3 P10 Q20 I2 R0.5
+N10 G0 X8
+G1 Z-5
+X4
+Z-10
+X8
+N20 X12
+M2

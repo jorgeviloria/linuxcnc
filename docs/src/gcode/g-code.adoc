@@ -2083,24 +2083,45 @@ G71.3 P- Q- <U-> <W-> I- <R-> <F->
 
 * 'P' - Sequence number (`N`) of the first block of the finished profile.
 * 'Q' - Sequence number (`N`) of the last block of the finished profile.
-* 'U' (parameter line) - Depth of cut per roughing pass, as a *radius* value.
-* 'R' - Retract distance after each pass. Defaults to 0.5, or to the value
-  stored by a previous parameter line.
-* 'U' (execute line) - X finishing allowance as a *diameter* value.
-  Positive for OD turning, negative for ID/boring.
+* 'U' (parameter line) - Depth of cut per roughing pass, as a *radius* value
+  (same as `I` on G71).
+* 'R' - Retract distance after each pass. Defaults to 0.5 mm or 0.020 inch,
+  or to the value stored by a previous parameter line.
+* 'U' (execute line) - X finishing allowance, in the same units as X:
+  *diameter* in G7, *radius* in G8. Positive for OD turning, negative
+  for ID/boring.
 * 'W' - Z finishing allowance.
 * 'I' - Depth of cut (radius). Used when there is no parameter-line `U`,
   or to override it.
 
+`U` and `W` on the G71.3/G70.3 line are cycle words, not extra-axis
+moves. Write `G` before `U`/`W` on that line (Fanuc order), e.g.
+`G71.3 U2 R0.5`. They are accepted even if the machine has no U/W axes.
+
 The profile is written inline between `N(P)` and `N(Q)` with G0, G1, G2
-and G3. Those blocks are a shape definition: after G71.3 or G70.3 they
-are skipped so they are not cut as ordinary motion. G70.3 later traces
-the same `P`/`Q` range as a finishing pass.
+and G3. Put this range *after* the G71.3 (or G70.3) command. Those
+blocks are a shape definition: after the cycle they are skipped so they
+are not cut as ordinary motion.
+
+If the current motion mode is not already G0, G1, G2 or G3 (for example
+after G80), the first profile block must contain G0, G1, G2 or G3. A
+bare `X`/`Z` move is allowed when G0–G3 is already modal.
+
+Parameter assignments (`#`) between the G71.3 line and `N(P)` are used
+when the profile is read, then those lines still run once after the
+cycle. Assignments inside `P`–`Q` affect only the profile (the range is
+skipped).
+
+G70.3 later traces the same `P`/`Q` range as a finishing pass. Feed for
+that pass is: `F` on the G70.3 line if given, otherwise the first `F` in
+the P-Q profile, otherwise the modal feed. G71.3 ignores `F` in the
+profile (Fanuc: roughing feed comes from the G71.3 line).
 
 Type I vs Type II is taken from the first motion in the `P` block, as on
 Fanuc:
 
-* Type I (no pockets) - the `P` block moves in X only.
+* Type I (no pockets) - the `P` block moves in X only. X from A' to B
+  must be monotonic (Fanuc alarm if it is not).
 * Type II (pockets allowed) - the `P` block includes X and Z (use `W0`
   if Z must not move).
 
@@ -2116,8 +2137,8 @@ It is an error if:
   execute line).
 * The command is given from MDI (there is no file to search for `N`
   numbers).
-* The profile is not monotonic in Z, the plane is not ZX (`G18`), or
-  cutter compensation is active.
+* The profile is not monotonic in Z, a Type I profile is not monotonic
+  in X, the plane is not ZX (`G18`), or cutter compensation is active.
 
 Example:
 

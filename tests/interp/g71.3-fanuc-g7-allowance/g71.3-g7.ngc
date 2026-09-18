@@ -1,0 +1,9 @@
+(G7: U finishing allowance is diameter. U4 -> 2mm/side, envelope X radius 8.)
+G54 G18 G21 G90 G7
+F200
+G0 X24 Z1
+G71.3 P10 Q20 U4.0 W0 I2 R0.5
+N10 G0 X12
+G1 Z-10
+N20 X24
+M2

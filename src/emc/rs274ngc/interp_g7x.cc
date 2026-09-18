@@ -6,6 +6,9 @@
 #include <deque>
 #include <memory>
 #include <complex>
+#include <functional>
+#include <vector>
+#include <algorithm>
 
 #include "interp_internal.hh"
 
@@ -64,6 +67,7 @@ public:
     virtual std::unique_ptr<segment> dup()=0;
     virtual double radius()=0;
     virtual bool monotonic() { return real(end-start)<=1e-3; }
+    virtual void visit_x(std::function<void(double)> const &fn) { fn(imag(end)); }
     virtual void do_finish(segment * /*prev*/, segment * /*next*/) {}
     std::complex<double> &sp() { return start; }
     std::complex<double> &ep() { return end; }
@@ -258,6 +262,7 @@ public:
 	else
 	    return entry<=1e-3 && exit<=1e-3 && dz<=-1e-3;
     }
+    void visit_x(std::function<void(double)> const &fn) override;
     void move(std::complex<double> d) override { start+=d; center+=d; end+=d; }
     void scale(double k) override { start*=k; end*=k; center*=k; finish*=k; }
     double extent() override {
@@ -378,6 +383,48 @@ bool round_segment::dive(std::complex<double> &location,
 	    return 0;
 	}
     }
+}
+
+void round_segment::visit_x(std::function<void(double)> const &fn)
+{
+    double r=std::abs(start-center);
+    if (!(r>0)) {
+	fn(imag(end));
+	return;
+    }
+    auto ang=[](std::complex<double> p, std::complex<double> c) {
+	auto d=p-c;
+	return std::atan2(imag(d), real(d));
+    };
+    double a0=ang(start, center);
+    double a1=ang(end, center);
+    double pi=std::acos(-1.0);
+    double two_pi=2*pi;
+    double sweep=ccw? (a1-a0):(a0-a1);
+    if (sweep<=0)
+	sweep+=two_pi;
+    double ext[2]={pi/2, -pi/2};
+    double dist[2], xs[2];
+    int n=0;
+    for (double ae : ext) {
+	double d=ccw? (ae-a0):(a0-ae);
+	while (d<0)
+	    d+=two_pi;
+	while (d>=two_pi)
+	    d-=two_pi;
+	if (d>1e-9 && d<sweep-1e-9) {
+	    dist[n]=d;
+	    xs[n]=imag(center)+r*std::sin(ae);
+	    n++;
+	}
+    }
+    if (n==2 && dist[1]<dist[0]) {
+	std::swap(dist[0], dist[1]);
+	std::swap(xs[0], xs[1]);
+    }
+    for (int i=0; i<n; i++)
+	fn(xs[i]);
+    fn(imag(end));
 }
 
 void round_segment::climb_only(std::complex<double> &location,
@@ -686,13 +733,13 @@ private:
 	throw(std::string("This can't happen"));
     }
 
-    void monotonic() {
+    void monotonic(const char *axis="Z") {
 	if(real(front()->ep()-front()->sp())>0) {
 	    front()->sp().real(real(front()->ep()));
 	}
 	for(auto &p : *this) {
 	    if(!p->monotonic())
-		throw(std::string("Not monotonic"));
+		throw(std::string("Not monotonic in ") + axis);
 	}
     }
 
@@ -739,7 +786,7 @@ public:
 	p	Number of passes to go from d to e
     */
     void do_g70(motion_base *out, double x, double z, double d, double e,
-	int p, CUTTER_COMP *cutter_comp_side
+	int p, CUTTER_COMP *cutter_comp_side, bool rapid_entry=true
     )
     {
 	front()->sp()=std::complex<double>(z,x);
@@ -747,11 +794,12 @@ public:
 	d*=unit;
 	e*=unit;
 
-	if(should_rotate_paths())
+	bool rotated=should_rotate_paths();
+	if(rotated)
 	    rotate();
 	swap();
 	do_finish();
-	monotonic();
+	monotonic(rotated ? "X" : "Z");
 	auto swapped_out=motion(out);
 
 	for(int pass=p; pass>0; pass--) {
@@ -763,7 +811,10 @@ public:
 	    *cutter_comp_side=CUTTER_COMP::OFF;
 	    swapped_out->straight_rapid(paths.front()->sp());
 	    *cutter_comp_side=comp;
-	    swapped_out->straight_rapid(paths.front()->ep());
+	    if (rapid_entry)
+		swapped_out->straight_rapid(paths.front()->ep());
+	    else
+		paths.front()->draw(swapped_out.get());
 	    paths.pop_front();
 	    for(const auto &path : paths)
 		path->draw(swapped_out.get());
@@ -794,7 +845,7 @@ public:
 	    rotate();
 	swap();
 	do_finish();
-	monotonic();
+	monotonic(do_rotate ? "X" : "Z");
 	add_distance(d);
 	std::complex<double> displacement(w,u);
 	for(auto &p : *this)
@@ -1028,30 +1079,54 @@ void g7x::add_distance(double distance) {
 #include "rs274ngc.hh"
 #include "rs274ngc_interp.hh"
 #include "interp_internal.hh"
+#include "interp_queue.hh"
+
+/* Cycle words on a G7x block must not leak into convert_straight/arc
+   (P as arc turns, R as radius-format, U/W as extra-axis motion). */
+static void g7x_clear_cycle_words(block_pointer block)
+{
+    block->a_flag=false;
+    block->b_flag=false;
+    block->c_flag=false;
+    block->d_flag=false;
+    block->e_flag=false;
+    block->i_flag=false;
+    block->j_flag=false;
+    block->k_flag=false;
+    block->p_flag=false;
+    block->p_number=-1;
+    block->q_flag=false;
+    block->q_number=-1;
+    block->r_flag=false;
+    block->u_flag=false;
+    block->v_flag=false;
+    block->w_flag=false;
+}
 
 class motion_machine:public motion_base {
     Interp *interp;
     setup_pointer settings;
     block_pointer block;
+    void prepare_xz(std::complex<double> end) {
+	g7x_clear_cycle_words(block);
+	block->x_flag=1;
+	block->x_number=imag(end);
+	block->z_flag=1;
+	block->z_number=real(end);
+    }
 public:
     motion_machine(Interp *i, setup_pointer s, block_pointer b):
 	interp(i), settings(s), block(b) { }
 
     void straight_move(std::complex<double> end) override {
-	block->x_flag=1;
-	block->x_number=imag(end);
-	block->z_flag=1;
-	block->z_number=real(end);
+	prepare_xz(end);
 	int r=interp->convert_straight(G_1, block, settings);
 	if(r!=INTERP_OK)
 	    throw(r);
     }
 
     void straight_rapid(std::complex<double> end) override  {
-	block->x_flag=1;
-	block->x_number=imag(end);
-	block->z_flag=1;
-	block->z_number=real(end);
+	prepare_xz(end);
 	int r=interp->convert_straight(G_0, block, settings);
 	if(r!=INTERP_OK)
 	    throw(r);
@@ -1059,10 +1134,7 @@ public:
     void circular_move(bool ccw,std::complex<double> center,
 	std::complex<double> end
     ) override {
-	block->x_flag=1;
-	block->x_number=imag(end);
-	block->z_flag=1;
-	block->z_number=real(end);
+	prepare_xz(end);
 	block->i_flag=1;
 	block->i_number=imag(center);
 	block->k_flag=1;
@@ -1123,8 +1195,10 @@ int Interp::convert_g7x(int mode,
 	    settings->g71_3_delta = block->u_number;
 	    settings->g71_3_have_delta = true;
 	}
-	if (block->r_flag)
+	if (block->r_flag) {
 	    settings->g71_3_retract = block->r_number;
+	    settings->g71_3_have_retract = true;
+	}
 	return INTERP_OK;
     }
 
@@ -1164,6 +1238,7 @@ int Interp::convert_g7x(int mode,
     }
     original_block.x_number=x;
     original_block.z_number=z;
+    g7x_clear_cycle_words(block);
 
     if (!fanuc || original_block.x_flag || original_block.z_flag) {
 	auto cutter_comp=settings->cutter_comp_side;
@@ -1178,14 +1253,11 @@ int Interp::convert_g7x(int mode,
     std::complex<double> start(z,x);
     bool type_ii=false;
     bool first_profile_block=true;
+    int first_motion_mode=-1;
+    bool have_profile_f=false;
+    double profile_f=0;
 
-    auto append_block = [&]() -> int {
-	if (first_profile_block &&
-	    (block->x_flag || block->z_flag || block->u_flag || block->w_flag)) {
-	    type_ii = block->z_flag || block->w_flag;
-	    first_profile_block = false;
-	}
-
+    auto apply_params = [&]() -> int {
 	for(int n=0; n<settings->parameter_occurrence; n++)
 	    settings->parameters[settings->parameter_numbers[n]]=
 		settings->parameter_values[n];
@@ -1195,6 +1267,31 @@ int Interp::convert_g7x(int mode,
 		settings->named_parameter_values[n]
 	    ));
 	settings->named_parameter_occurrence = 0;
+	return INTERP_OK;
+    };
+
+    auto append_block = [&]() -> int {
+	if(block->g_modes[GM_MOTION]!=-1)
+	    settings->motion_mode=block->g_modes[GM_MOTION];
+	else if (settings->motion_mode > 30) {
+	    if (fanuc)
+		ERS(_("G%d.%d first profile block must contain G0, G1, G2 or G3"),
+		    cycle, subcycle);
+	    else
+		settings->motion_mode = 10;
+	}
+
+	if (first_profile_block &&
+	    (block->x_flag || block->z_flag || block->u_flag || block->w_flag)) {
+	    type_ii = block->z_flag || block->w_flag;
+	    first_motion_mode = settings->motion_mode;
+	    first_profile_block = false;
+	}
+
+	if (fanuc && cycle == 70 && block->f_flag && !have_profile_f) {
+	    have_profile_f = true;
+	    profile_f = block->f_number;
+	}
 
 	std::complex<double> end(start);
 	std::complex<double> center(0,0);
@@ -1229,11 +1326,6 @@ int Interp::convert_g7x(int mode,
 	if(old.distance_mode()==DISTANCE_MODE::INCREMENTAL)
 	    end+=start;
 
-	if(block->g_modes[GM_MOTION]!=-1)
-	    settings->motion_mode=block->g_modes[GM_MOTION];
-	else if (settings->motion_mode > 30)
-	    /* Modal G7x is not a path move; treat a bare XZ block as G1. */
-	    settings->motion_mode = 10;
 	if(start!=end) {
 	    switch(settings->motion_mode) {
 	    case 0:
@@ -1339,6 +1431,29 @@ int Interp::convert_g7x(int mode,
 	    }
 	} restore(settings);
 
+	/* Speculatively apply # assignments while reading the profile, then
+	   put parameters back. Lines between G71.3 and N(P) still run once
+	   after the cycle; lines inside P-Q are skipped. */
+	struct RestoreParams {
+	    setup_pointer s;
+	    std::vector<double> numbered;
+	    parameter_map named0;
+	    parameter_map named_local;
+	    int level;
+	    RestoreParams(setup_pointer st):
+		s(st),
+		numbered(st->parameters,
+		    st->parameters + interp_param_global::RS274NGC_MAX_PARAMETERS),
+		named0(st->sub_context[0].named_params),
+		named_local(st->sub_context[st->call_level].named_params),
+		level(st->call_level) {}
+	    ~RestoreParams() {
+		std::copy(numbered.begin(), numbered.end(), s->parameters);
+		s->sub_context[0].named_params = named0;
+		s->sub_context[level].named_params = named_local;
+	    }
+	} restore_params(settings);
+
 	CHKS((fseek(settings->file_pointer, 0, SEEK_SET) != 0),
 	    _("G%d.%d could not rewind the program to find N%d"),
 	    cycle, subcycle, n_start);
@@ -1350,6 +1465,8 @@ int Interp::convert_g7x(int mode,
 	char line[LINELEN];
 
 	while (fgets(raw_line, LINELEN, settings->file_pointer)) {
+	    settings->parameter_occurrence = 0;
+	    settings->named_parameter_occurrence = 0;
 	    if (strlen(raw_line) == (LINELEN - 1))
 		ERS("G7X error: line too long while reading P-Q profile");
 	    for (int index = (int)strlen(raw_line) - 1;
@@ -1363,6 +1480,9 @@ int Interp::convert_g7x(int mode,
 		continue;
 
 	    CHP(parse_line(line, block, settings));
+	    /* Apply # assignments on every scanned line, including those
+	       between G71.3 and N(P), so the profile sees the new values. */
+	    CHP(apply_params());
 
 	    if (!collecting && block->n_number == n_start) {
 		collecting = true;
@@ -1381,14 +1501,19 @@ int Interp::convert_g7x(int mode,
 	CHKS(!found_q, _("G%d.%d Q sequence number N%d not found"),
 	    cycle, subcycle, n_end);
 	*block = original_block;
+	g7x_clear_cycle_words(block);
     } else {
 	auto exit_call_level=settings->call_level;
-	CHP(read((std::string("O")+std::to_string(static_cast<int>(block->q_number))+" CALL").c_str()));
+	/* Q was cleared from `block` before the optional start rapid so it
+	   cannot leak into convert_straight; the subroutine number lives
+	   on original_block. */
+	CHP(read((std::string("O")+std::to_string(static_cast<int>(original_block.q_number))+" CALL").c_str()));
 	for(;;) {
 	    if(block->o_name!=NULL)
 		CHP(convert_control_functions(block, settings));
 	    if(settings->call_level==exit_call_level)
 		break;
+	    CHP(apply_params());
 	    CHP(append_block());
 	    CHP(read());
 	}
@@ -1421,10 +1546,14 @@ int Interp::convert_g7x(int mode,
 	    ERS(_("G71.3 requires depth of cut (U on the parameter line or I on the execute line)"));
 	if (original_block.r_flag)
 	    r = original_block.r_number;
-	else
+	else if (settings->g71_3_have_retract)
 	    r = settings->g71_3_retract;
-	/* Fanuc second-line U is a diameter finishing allowance. */
-	u = original_block.u_flag ? original_block.u_number / 2.0 : 0.0;
+	else
+	    r = (settings->length_units == CANON_UNITS_INCHES) ? 0.020 : 0.5;
+	/* Finish allowance U is in the same units as X: diameter in G7, radius in G8. */
+	u = original_block.u_flag ? original_block.u_number : 0.0;
+	if (original_block.u_flag && settings->lathe_diameter_mode)
+	    u /= 2.0;
 	w = original_block.w_flag ? original_block.w_number : 0.0;
 	d = 0;
     }
@@ -1434,6 +1563,10 @@ int Interp::convert_g7x(int mode,
 	p = 1;
 	u = 0;
 	w = 0;
+	if (!original_block.f_flag && have_profile_f) {
+	    settings->feed_rate = profile_f;
+	    enqueue_SET_FEED_RATE(profile_f);
+	}
     }
 
     settings->current_x=start_x;
@@ -1448,9 +1581,42 @@ int Interp::convert_g7x(int mode,
     try {
 	switch(cycle) {
 	case 70:
-	    path.do_g70(&motion,x,z,d,e,p,&settings->cutter_comp_side);
+	    path.do_g70(&motion,x,z,d,e,p,&settings->cutter_comp_side,
+		!(fanuc && (first_motion_mode == 10 || first_motion_mode == 20 ||
+			    first_motion_mode == 30)));
 	    break;
 	case 71:
+	    if (fanuc && !type_ii) {
+		auto it=path.begin();
+		if (it != path.end())
+		    ++it; /* skip A to A'; ignore a later closing segment */
+		double xcur=0;
+		int dir=0;
+		bool have_x=false;
+		if (it != path.end()) {
+		    xcur=imag((*it)->sp());
+		    have_x=true;
+		}
+		for (; it != path.end(); ++it) {
+		    bool failed=false;
+		    (*it)->visit_x([&](double xv) {
+			if (failed || !have_x)
+			    return;
+			if (std::abs(xv-xcur)<tolerance) {
+			    xcur=xv;
+			    return;
+			}
+			int s=xv>xcur? 1:-1;
+			if (!dir)
+			    dir=s;
+			else if (s!=dir)
+			    failed=true;
+			xcur=xv;
+		    });
+		    if (failed)
+			ERS(_("G71.3 Type I profile is not monotonic in X"));
+		}
+	    }
 	    if(std::abs(real(dback))>0 && imag(dfront)*(x-imag(start))<0) {
 		std::complex<double> end{real(start),x};
 		path.emplace_back(std::make_unique<straight_segment>(
@@ -1480,6 +1646,7 @@ int Interp::convert_g7x(int mode,
     if (fanuc) {
 	auto cutter_comp=settings->cutter_comp_side;
 	settings->cutter_comp_side=CUTTER_COMP::OFF;
+	g7x_clear_cycle_words(block);
 	block->x_flag=1;
 	block->x_number=start_x;
 	block->z_flag=1;

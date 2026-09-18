@@ -202,6 +202,7 @@ setup::setup() :
     g71_3_delta(0.0),
     g71_3_retract(0.5),
     g71_3_have_delta(false),
+    g71_3_have_retract(false),
     g7x_skip_n_start(-1),
     g7x_skip_n_end(-1),
     g7x_skip_active(false),

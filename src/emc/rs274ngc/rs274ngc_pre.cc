@@ -1825,6 +1825,7 @@ int Interp::reset()
     _setup.g71_3_delta = 0.0;
     _setup.g71_3_retract = 0.5;
     _setup.g71_3_have_delta = false;
+    _setup.g71_3_have_retract = false;
     _setup.g7x_skip_n_start = -1;
     _setup.g7x_skip_n_end = -1;
     _setup.g7x_skip_active = false;

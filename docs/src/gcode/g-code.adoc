@@ -93,7 +93,9 @@ as the 'L number', and so on for any other letter.
 |<<gcode:g61.1,G61.1>>             |Exact Stop Mode
 |<<gcode:g64,G64>>                 |Path Control Mode with Optional Tolerance
 |<<gcode:g70,G70>>                 |Lathe finishing cycle
+|<<gcode:g70.3,G70.3>>             |Fanuc-style lathe finishing cycle
 |<<gcode:g71-g72,G71-G72>>         |Lathe roughing cycle
+|<<gcode:g71.3,G71.3>>             |Fanuc-style lathe roughing cycle
 |<<gcode:g73,G73>>                 |Drilling Cycle with Chip Breaking
 |<<gcode:g74,G74>>                 |Left-hand Tapping Cycle with Dwell
 |<<gcode:g76,G76>>                 |Multi-pass Threading Cycle (Lathe)
@@ -1958,6 +1960,8 @@ G70 Q- <X-> <Z-> <D-> <E-> <P->
 
 The 'G70' cycle is intended to be used after the shape of the profile
 given in the subroutine with number Q has been cut with G71 or G72.
+For a Fanuc-style finishing pass over `N` sequence numbers, see
+<<gcode:g70.3,G70.3>>.
 
 * Preliminary motion.
   ** If Z or X are used a <<gcode:g0,rapid move>> to that position
@@ -2053,6 +2057,83 @@ It is an error if:
 * The path given in the profile is not monotonic in Z or X.
 * <<gcode:g17-g19.1>> has not been used to select the ZX plane.
 * <<gcode:g41-g42>> is active.
+
+[[gcode:g71.3]]
+[[gcode:g70.3]]
+== G71.3 G70.3 Fanuc-style lathe cycles(((G71.3 G70.3 Fanuc-style lathe cycles)))
+
+These cycles follow the two-line Fanuc 0i/30i G71/G70 dialect. The
+existing <<gcode:g71-g72,G71>> / <<gcode:g70,G70>> cycles (subroutine `Q`)
+are unchanged.
+
+[source,ngc]
+----
+G71.3 U- R-                          (parameter line, optional)
+G71.3 P- Q- <U-> <W-> <I-> <R-> <F->  (execute line)
+N(ns) ... profile ... N(nf)
+G70.3 P- Q-
+----
+
+One-line form (depth of cut on the execute line):
+
+[source,ngc]
+----
+G71.3 P- Q- <U-> <W-> I- <R-> <F->
+----
+
+* 'P' - Sequence number (`N`) of the first block of the finished profile.
+* 'Q' - Sequence number (`N`) of the last block of the finished profile.
+* 'U' (parameter line) - Depth of cut per roughing pass, as a *radius* value.
+* 'R' - Retract distance after each pass. Defaults to 0.5, or to the value
+  stored by a previous parameter line.
+* 'U' (execute line) - X finishing allowance as a *diameter* value.
+  Positive for OD turning, negative for ID/boring.
+* 'W' - Z finishing allowance.
+* 'I' - Depth of cut (radius). Used when there is no parameter-line `U`,
+  or to override it.
+
+The profile is written inline between `N(P)` and `N(Q)` with G0, G1, G2
+and G3. Those blocks are a shape definition: after G71.3 or G70.3 they
+are skipped so they are not cut as ordinary motion. G70.3 later traces
+the same `P`/`Q` range as a finishing pass.
+
+Type I vs Type II is taken from the first motion in the `P` block, as on
+Fanuc:
+
+* Type I (no pockets) - the `P` block moves in X only.
+* Type II (pockets allowed) - the `P` block includes X and Z (use `W0`
+  if Z must not move).
+
+The cycle start point is the tool position before G71.3 (optional `X`/`Z`
+on the G71.3 line rapids there first). After roughing or finishing the
+tool returns to that start point.
+
+It is an error if:
+
+* `P` or `Q` is missing on the execute line.
+* No `N(P)` or `N(Q)` exists in the current program file.
+* Depth of cut is missing (`U` on the parameter line or `I` on the
+  execute line).
+* The command is given from MDI (there is no file to search for `N`
+  numbers).
+* The profile is not monotonic in Z, the plane is not ZX (`G18`), or
+  cutter compensation is active.
+
+Example:
+
+[source,ngc]
+----
+G18 G21 G90 G8 F200
+G0 X25 Z2
+G71.3 U2.0 R0.5
+G71.3 P10 Q20 U1.0 W0.2
+N10 G0 X10
+G1 Z-20
+X20 Z-25
+N20 X25
+G70.3 P10 Q20
+M2
+----
 
 [[gcode:g73]]
 == G73 Drilling Cycle with Chip Breaking(((G73 Drilling Cycle with Chip Break)))

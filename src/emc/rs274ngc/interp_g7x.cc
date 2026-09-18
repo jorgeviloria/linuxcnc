@@ -1022,6 +1022,8 @@ void g7x::add_distance(double distance) {
 #include <cstdlib>
 #include <cmath>
 #include <cstring>
+#include <cctype>
+#include <cstdio>
 #include <string>
 #include "rs274ngc.hh"
 #include "rs274ngc_interp.hh"
@@ -1106,17 +1108,33 @@ public:
     DISTANCE_MODE distance_mode() { return saved_distance_mode; }
 };
 
-int Interp::convert_g7x(int /*mode*/,
+int Interp::convert_g7x(int mode,
       block_pointer block,     //!< pointer to a block of RS274 instructions
       setup_pointer settings)  //!< pointer to machine settings
 {
-
-    if(!block->q_flag)
-    	ERS("G7x.x  requires a Q word");
-
-    int cycle=block->g_modes[GM_MOTION];
+    int cycle=mode;
     int subcycle=cycle%10;
     cycle/=10;
+    bool fanuc = (mode == G_71_3 || mode == G_70_3);
+
+    /* Fanuc parameter line: G71.3 U(Δd) R(e) stores depth/retract only. */
+    if (mode == G_71_3 && !block->p_flag && !block->q_flag) {
+	if (block->u_flag) {
+	    settings->g71_3_delta = block->u_number;
+	    settings->g71_3_have_delta = true;
+	}
+	if (block->r_flag)
+	    settings->g71_3_retract = block->r_number;
+	return INTERP_OK;
+    }
+
+    if (fanuc) {
+	CHKS((!block->p_flag || !block->q_flag),
+	    _("G%d.%d execute line requires P and Q sequence numbers"),
+	    cycle, subcycle);
+    } else if (!block->q_flag) {
+	ERS("G7x.x  requires a Q word");
+    }
 
     if(settings->cutter_comp_side != CUTTER_COMP::OFF && cycle!=70)
 	ERS("G%d.%d cannot be used with cutter compensation enabled",
@@ -1147,23 +1165,26 @@ int Interp::convert_g7x(int /*mode*/,
     original_block.x_number=x;
     original_block.z_number=z;
 
-    auto cutter_comp=settings->cutter_comp_side;
-    settings->cutter_comp_side=CUTTER_COMP::OFF;
-    int error=convert_straight(G_0, block, settings);
-    settings->cutter_comp_side=cutter_comp;
-    if(error!=INTERP_OK)
-	return error;
+    if (!fanuc || original_block.x_flag || original_block.z_flag) {
+	auto cutter_comp=settings->cutter_comp_side;
+	settings->cutter_comp_side=CUTTER_COMP::OFF;
+	int error=convert_straight(G_0, block, settings);
+	settings->cutter_comp_side=cutter_comp;
+	if(error!=INTERP_OK)
+	    return error;
+    }
 
     g7x path;
     std::complex<double> start(z,x);
+    bool type_ii=false;
+    bool first_profile_block=true;
 
-    auto exit_call_level=settings->call_level;
-    CHP(read((std::string("O")+std::to_string(static_cast<int>(block->q_number))+" CALL").c_str()));
-    for(;;) {
-	if(block->o_name!=NULL)
-	    CHP(convert_control_functions(block, settings));
-	if(settings->call_level==exit_call_level)
-	    break;
+    auto append_block = [&]() -> int {
+	if (first_profile_block &&
+	    (block->x_flag || block->z_flag || block->u_flag || block->w_flag)) {
+	    type_ii = block->z_flag || block->w_flag;
+	    first_profile_block = false;
+	}
 
 	for(int n=0; n<settings->parameter_occurrence; n++)
 	    settings->parameters[settings->parameter_numbers[n]]=
@@ -1186,10 +1207,10 @@ int Interp::convert_g7x(int /*mode*/,
 		ERS("G7x error: Cannot use U in incremental mode (G91)");
 	    if(block->x_flag)
 		ERS("G7x error: Cannot use U and X in the same block");
-	    auto u=block->u_number;
+	    auto uu=block->u_number;
 	    if(settings->lathe_diameter_mode)
-		u/=2;
-	    end.imag(end.imag()+u);
+		uu/=2;
+	    end.imag(end.imag()+uu);
 	} else if(block->x_flag)
 	    end.imag(block->x_number);
 
@@ -1210,6 +1231,9 @@ int Interp::convert_g7x(int /*mode*/,
 
 	if(block->g_modes[GM_MOTION]!=-1)
 	    settings->motion_mode=block->g_modes[GM_MOTION];
+	else if (settings->motion_mode > 30)
+	    /* Modal G7x is not a path move; treat a bare XZ block as G1. */
+	    settings->motion_mode = 10;
 	if(start!=end) {
 	    switch(settings->motion_mode) {
 	    case 0:
@@ -1223,14 +1247,14 @@ int Interp::convert_g7x(int /*mode*/,
 		if(block->r_flag) {
 		    if(block->i_flag || block->k_flag)
 			ERS("G7X error: both R and I or K flag used for arc");
-		    double r=block->r_number;
+		    double rr=block->r_number;
 		    center=(start+end)/2.0;
-		    auto d=I*sqrt((r*r-norm(end-start)/4)/norm(end-start))
+		    auto dd=I*sqrt((rr*rr-norm(end-start)/4)/norm(end-start))
 			*(end-start);
 		    if(settings->motion_mode==30)
-			center+=d;
+			center+=dd;
 		    else
-			center-=d;
+			center-=dd;
 		} else {
 		    if(!block->i_flag && !block->k_flag)
 			ERS("G7X error: either I or K must be present for arc");
@@ -1238,29 +1262,27 @@ int Interp::convert_g7x(int /*mode*/,
 			center+=start;
 		}
 
-        /* Verify if circular motion is valid */
-        double tpx;
-        double tpy;
-        double tpz;
-        double tAA_p;
-        double tBB_p;
-        double tCC_p;
-        double tu_p;
-        double tv_p;
-        double tw_p;
-        CHP(find_ends(block, settings, &tpx, &tpy, &tpz, &tAA_p, &tBB_p, &tCC_p, &tu_p, &tv_p, &tw_p));
+		double tpx;
+		double tpy;
+		double tpz;
+		double tAA_p;
+		double tBB_p;
+		double tCC_p;
+		double tu_p;
+		double tv_p;
+		double tw_p;
+		CHP(find_ends(block, settings, &tpx, &tpy, &tpz, &tAA_p, &tBB_p, &tCC_p, &tu_p, &tv_p, &tw_p));
 
-        if(!block->r_flag){
-            double center1, center2;
-            int turn;
-            double radius_tolerance = (settings->length_units == CANON_UNITS_INCHES) ? RADIUS_TOLERANCE_INCH : RADIUS_TOLERANCE_MM;
-            double spiral_abs_tolerance = (settings->length_units == CANON_UNITS_INCHES) ? settings->center_arc_radius_tolerance_inch : settings->center_arc_radius_tolerance_mm;
-            CHP(arc_data_ijk((settings->motion_mode==30)? G_3 : G_2, settings->plane, settings->current_z, settings->current_x, tpz, tpx,
-                             (old.ijk_distance_mode() == DISTANCE_MODE::ABSOLUTE),
-                             (block->k_flag)? block->k_number : 0.0, (block->i_flag)? block->i_number : 0.0, block->p_flag? round_to_int(block->p_number) : 1,
-                             &center1, &center2, &turn, radius_tolerance, spiral_abs_tolerance, SPIRAL_RELATIVE_TOLERANCE));
-        }
-        /*************/
+		if(!block->r_flag){
+		    double center1, center2;
+		    int turn;
+		    double radius_tolerance = (settings->length_units == CANON_UNITS_INCHES) ? RADIUS_TOLERANCE_INCH : RADIUS_TOLERANCE_MM;
+		    double spiral_abs_tolerance = (settings->length_units == CANON_UNITS_INCHES) ? settings->center_arc_radius_tolerance_inch : settings->center_arc_radius_tolerance_mm;
+		    CHP(arc_data_ijk((settings->motion_mode==30)? G_3 : G_2, settings->plane, settings->current_z, settings->current_x, tpz, tpx,
+				     (old.ijk_distance_mode() == DISTANCE_MODE::ABSOLUTE),
+				     (block->k_flag)? block->k_number : 0.0, (block->i_flag)? block->i_number : 0.0, block->p_flag? round_to_int(block->p_number) : 1,
+				     &center1, &center2, &turn, radius_tolerance, spiral_abs_tolerance, SPIRAL_RELATIVE_TOLERANCE));
+		}
 
 		path.emplace_back(std::make_unique<round_segment>(
 		    settings->motion_mode==30, start, center, end
@@ -1286,10 +1308,97 @@ int Interp::convert_g7x(int /*mode*/,
 	    settings->current_z=real(end);
 	    start=end;
 	}
-	CHP(read());
-    }
-    if(path.size()<=1)
 	return INTERP_OK;
+    };
+
+    if (fanuc) {
+	CHKS((settings->file_pointer == NULL),
+	    _("G%d.%d P/Q profile requires an open program file (not MDI)"),
+	    cycle, subcycle);
+	int n_start = round_to_int(original_block.p_number);
+	int n_end = round_to_int(original_block.q_number);
+	CHKS((n_start < 0 || n_end < 0),
+	    _("G%d.%d P and Q must be non-negative sequence numbers"),
+	    cycle, subcycle);
+
+	struct RestoreFile {
+	    FILE *fp;
+	    long pos;
+	    int *seqn;
+	    int seq;
+	    RestoreFile(setup_pointer s):
+		fp(s->file_pointer),
+		pos(s->file_pointer ? ftell(s->file_pointer) : -1),
+		seqn(&s->sequence_number),
+		seq(s->sequence_number) {}
+	    ~RestoreFile() {
+		if (fp && pos >= 0)
+		    fseek(fp, pos, SEEK_SET);
+		if (seqn)
+		    *seqn = seq;
+	    }
+	} restore(settings);
+
+	CHKS((fseek(settings->file_pointer, 0, SEEK_SET) != 0),
+	    _("G%d.%d could not rewind the program to find N%d"),
+	    cycle, subcycle, n_start);
+
+	bool collecting=false;
+	bool found_p=false;
+	bool found_q=false;
+	char raw_line[LINELEN];
+	char line[LINELEN];
+
+	while (fgets(raw_line, LINELEN, settings->file_pointer)) {
+	    if (strlen(raw_line) == (LINELEN - 1))
+		ERS("G7X error: line too long while reading P-Q profile");
+	    for (int index = (int)strlen(raw_line) - 1;
+		 index >= 0 && isspace(static_cast<unsigned char>(raw_line[index]));
+		 index--)
+		raw_line[index] = 0;
+	    rs274ngc_strlcpy(line, raw_line, LINELEN);
+	    CHP(close_and_downcase(line));
+	    if (line[0] == 0 || line[0] == '/' ||
+		(line[0] == '%' && line[1] == 0))
+		continue;
+
+	    CHP(parse_line(line, block, settings));
+
+	    if (!collecting && block->n_number == n_start) {
+		collecting = true;
+		found_p = true;
+	    }
+	    if (collecting) {
+		CHP(append_block());
+		if (block->n_number == n_end) {
+		    found_q = true;
+		    break;
+		}
+	    }
+	}
+	CHKS(!found_p, _("G%d.%d P sequence number N%d not found"),
+	    cycle, subcycle, n_start);
+	CHKS(!found_q, _("G%d.%d Q sequence number N%d not found"),
+	    cycle, subcycle, n_end);
+	*block = original_block;
+    } else {
+	auto exit_call_level=settings->call_level;
+	CHP(read((std::string("O")+std::to_string(static_cast<int>(block->q_number))+" CALL").c_str()));
+	for(;;) {
+	    if(block->o_name!=NULL)
+		CHP(convert_control_functions(block, settings));
+	    if(settings->call_level==exit_call_level)
+		break;
+	    CHP(append_block());
+	    CHP(read());
+	}
+    }
+    if(path.size()<=1) {
+	if (fanuc)
+	    ERS(_("G%d.%d profile between P and Q is empty or too short"),
+		cycle, subcycle);
+	return INTERP_OK;
+    }
 
     double d=0, e=0, i=1, r=0.5, u=0, w=0;
     int p = 1;
@@ -1302,6 +1411,30 @@ int Interp::convert_g7x(int /*mode*/,
     if(original_block.w_flag) w=original_block.w_number;
     if(original_block.x_flag) x=original_block.x_number;
     if(original_block.z_flag) z=original_block.z_number;
+
+    if (fanuc && cycle == 71) {
+	if (original_block.i_flag)
+	    i = original_block.i_number;
+	else if (settings->g71_3_have_delta)
+	    i = settings->g71_3_delta;
+	else
+	    ERS(_("G71.3 requires depth of cut (U on the parameter line or I on the execute line)"));
+	if (original_block.r_flag)
+	    r = original_block.r_number;
+	else
+	    r = settings->g71_3_retract;
+	/* Fanuc second-line U is a diameter finishing allowance. */
+	u = original_block.u_flag ? original_block.u_number / 2.0 : 0.0;
+	w = original_block.w_flag ? original_block.w_number : 0.0;
+	d = 0;
+    }
+    if (fanuc && cycle == 70) {
+	d = 0;
+	e = 0;
+	p = 1;
+	u = 0;
+	w = 0;
+    }
 
     settings->current_x=start_x;
     settings->current_z=start_z;
@@ -1324,7 +1457,8 @@ int Interp::convert_g7x(int /*mode*/,
 		    start, end
 		));
 	    }
-	    path.do_g71(&motion,subcycle,x,z,u,w,d,i,r);
+	    path.do_g71(&motion, fanuc ? (type_ii ? 0 : 1) : subcycle,
+		x,z,u,w,d,i,r);
 	    break;
 	case 72:
 	    if(std::abs(imag(dback))>0 && real(dfront)*(z-real(start))<0) {
@@ -1339,8 +1473,24 @@ int Interp::convert_g7x(int /*mode*/,
     } catch(std::string &s) {
 	ERS("G7X error: %s", s.c_str());
 	return INTERP_ERROR;
-    } catch(int i) {
-	return i;
+    } catch(int err) {
+	return err;
+    }
+
+    if (fanuc) {
+	auto cutter_comp=settings->cutter_comp_side;
+	settings->cutter_comp_side=CUTTER_COMP::OFF;
+	block->x_flag=1;
+	block->x_number=start_x;
+	block->z_flag=1;
+	block->z_number=start_z;
+	int error=convert_straight(G_0, block, settings);
+	settings->cutter_comp_side=cutter_comp;
+	if(error!=INTERP_OK)
+	    return error;
+	settings->g7x_skip_n_start = round_to_int(original_block.p_number);
+	settings->g7x_skip_n_end = round_to_int(original_block.q_number);
+	settings->g7x_skip_active = false;
     }
 
     return INTERP_OK;

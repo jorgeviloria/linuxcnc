@@ -238,6 +238,23 @@ int Interp::execute_block(block_pointer block,   //!< pointer to a block of RS27
   int status = INTERP_EXIT;
 
   block->line_number = settings->sequence_number;
+
+  /* After G71.3/G70.3 the P-Q profile is definition only: skip it so the
+     contour is not executed as ordinary motion until a later G70.3. */
+  if (settings->g7x_skip_n_end >= 0) {
+    if (!settings->g7x_skip_active &&
+	block->n_number == settings->g7x_skip_n_start)
+      settings->g7x_skip_active = true;
+    if (settings->g7x_skip_active) {
+      if (block->n_number == settings->g7x_skip_n_end) {
+	settings->g7x_skip_active = false;
+	settings->g7x_skip_n_start = -1;
+	settings->g7x_skip_n_end = -1;
+      }
+      return INTERP_OK;
+    }
+  }
+
   if ((block->comment[0] != 0) && ONCE(STEP_COMMENT)) {
     status = convert_comment(block->comment);
     CHP(status);

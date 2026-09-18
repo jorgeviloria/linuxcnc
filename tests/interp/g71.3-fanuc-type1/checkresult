@@ -1,0 +1,7 @@
+#!/bin/bash
+set -e
+result=${1:-result}
+
+grep -q STRAIGHT_FEED "$result" || { echo "no roughing STRAIGHT_FEED in output"; exit 1; }
+grep -q '40.0000' "$result" || { echo "post-profile marker X40/Z40 missing (P-Q not skipped?)"; exit 1; }
+exit 0

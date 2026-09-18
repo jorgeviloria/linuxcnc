@@ -1,0 +1,5 @@
+#!/bin/bash
+set -e
+result=${1:-result}
+grep -q STRAIGHT_FEED "$result" || { echo "no STRAIGHT_FEED in output"; exit 1; }
+exit 0

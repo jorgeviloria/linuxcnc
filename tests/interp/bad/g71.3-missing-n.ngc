@@ -1,0 +1,5 @@
+;G71.3 P sequence number N10 not found
+G18 G21 F100
+G0 X12 Z1
+G71.3 P10 Q20 I1
+M2

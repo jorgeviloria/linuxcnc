@@ -19,4 +19,12 @@ grep -q -- '-10.0000' "$result" || {
     echo "Z#101=-10 was not applied in the profile"
     exit 1
 }
+# #102=[#102+1] is inside P-Q: skip must not store it. Live #102 stays 20.
+if ! grep -E -q 'STRAIGHT_TRAVERSE\(20\.0000.*, *51\.0000' "$result"; then
+    echo "expected TRAVERSE to X=20 Z=51 (#102 inside P-Q must not persist)"
+    if grep -E -q 'STRAIGHT_TRAVERSE\(21\.0000.*, *51\.0000' "$result"; then
+        echo "got X=21 Z=51: skipped #102=[#102+1] was applied to live parameters"
+    fi
+    exit 1
+fi
 exit 0

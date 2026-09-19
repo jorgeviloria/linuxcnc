@@ -1993,8 +1993,17 @@ It is an error if:
 == G71 G72 Lathe roughing cycles(((G71 G72 Lathe roughing cycles)))
 
 [NOTE]
-The G71 and G72 cycles are currently somewhat fragile.
-See issue https://github.com/LinuxCNC/linuxcnc/issues/2939[#2939] for example.
+G71/G72/G71.3 rough with **constant-X scan passes** (Fanuc-style): each
+depth of cut is a finite set of Z intervals, so a profile with pockets
+can no longer make the cycle hang. A `D` offset will not insert a huge
+connecting arc (see issue
+https://github.com/LinuxCNC/linuxcnc/issues/2939[#2939]). The profile
+must still be monotonic in Z (G71) or X (G72).
+
+After the scan passes, G71 and G72 (without suffix) follow the offset
+profile once with a finishing move, so tapers, radii and shoulders are
+left with a uniform finishing allowance instead of steps of one depth
+of cut. G7x.1 and G7x.2 do not follow the profile.
 
 [source,ngc]
 ----
@@ -2041,15 +2050,20 @@ some additional material to cut before the G7x.2 cycle, so if G7x.1 used
 a D1.0 the G7x.2 can use D0.5 and 0.5mm will be removed while moving
 from one pocket to the next.
 
-The normal G7x cycles cut the entire profile in one cycle.
+The G71 and G72 cycles (without suffix) cut the outer envelope and the
+pockets before following the profile; G7x.1 only cuts the envelope and
+G7x.2 only cuts the pockets. Every scan pass returns to the starting X.
 
 . Preliminary motion.
   ** If Z or X are used a <<gcode:g0,rapid move>> to that position
      is done.
-  ** After the profile has been cut, the tool stops at the end of the
-     profile, including the distance specified in D.
+  ** After the scan passes, G71 and G72 follow the profile and the tool
+     stops at its end, including the distance specified in D. G7x.1 and
+     G7x.2 stop at the starting X instead.
 . The D number is used to  keep a distance from the final profile,
   to allow material to remain for finishing.
+. A finishing pass (<<gcode:g70,G70>> or a second cycle with a smaller
+  D) is still needed to remove the material left by D.
 
 It is an error if:
 
@@ -2064,7 +2078,16 @@ It is an error if:
 
 These cycles follow the two-line Fanuc 0i/30i G71/G70 dialect. The
 existing <<gcode:g71-g72,G71>> / <<gcode:g70,G70>> cycles (subroutine `Q`)
-are unchanged.
+share the same **scan-pass** engine, but G71/G72 also follow the offset
+profile once at the end. G71.3 roughing is scan passes only:
+Type I (X-only first block) cuts only the outer envelope at each
+depth; Type II also cuts pocket intervals. Finishing allowance is
+`U`/`W` translation, not a `D` curve-offset, and a finishing pass
+(G70.3, or G70 with a subroutine) is needed to finish the profile.
+`G70.3` with the same `P`/`Q` numbers reuses the range `G71.3` found;
+otherwise the range is searched after the cycle first and then from the
+start of the program, as Fanuc does. Avoid reusing `N` numbers that
+appear before the profile.
 
 [source,ngc]
 ----
@@ -2109,8 +2132,10 @@ bare `X`/`Z` move is allowed when G0–G3 is already modal.
 
 Parameter assignments (`#`) between the G71.3 line and `N(P)` are used
 when the profile is read, then those lines still run once after the
-cycle. Assignments inside `P`–`Q` affect only the profile (the range is
-skipped).
+cycle. Assignments inside `P`–`Q` are used only while that cycle reads
+the profile, then discarded: skipped lines do not store them. Do not
+put mutable `#` inside `P`–`Q` (for example `#100=[#100+1]`); each
+G71.3/G70.3 re-reads the range with the live values.
 
 G70.3 later traces the same `P`/`Q` range as a finishing pass. Feed for
 that pass is: `F` on the G70.3 line if given, otherwise the first `F` in

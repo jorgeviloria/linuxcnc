@@ -861,6 +861,13 @@ struct setup
   int g7x_skip_n_start;
   int g7x_skip_n_end;
   bool g7x_skip_active;
+  /* Range found by G71.3, reused by G70.3 with the same P/Q numbers */
+  bool g7x_profile_valid;
+  char g7x_profile_file[LINELEN];
+  long g7x_profile_p_pos;
+  long g7x_profile_q_pos;
+  int g7x_profile_p;
+  int g7x_profile_q;
 
 #define FEATURE(x) (_setup.feature_set & FEATURE_ ## x)
 #define FEATURE_RETAIN_G43           0x00000001

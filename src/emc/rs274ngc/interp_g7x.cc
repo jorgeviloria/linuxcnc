@@ -56,9 +56,7 @@ public:
     virtual ~segment() = default;
     typedef std::deque<double> intersections_t;
     virtual void intersection_z(double x, intersections_t &is)=0;
-    virtual bool climb(std::complex<double>&, motion_base*)=0;
-    virtual bool dive(std::complex<double>&,double, motion_base*,bool)=0;
-    virtual void climb_only(std::complex<double>&, motion_base*)=0;
+    virtual void crossings_up(double /*z*/, double /*xmin*/, int & /*n*/) {}
     virtual void draw(motion_base*)=0;
     virtual void offset(double)=0;
     virtual void intersect(segment*)=0;
@@ -119,9 +117,7 @@ public:
     straight_segment(std::complex<double> s,std::complex<double> e):
 	segment(s,e) {}
     void intersection_z(double x, intersections_t &is) override;
-    bool climb(std::complex<double>&,motion_base*) override;
-    bool dive(std::complex<double>&,double, motion_base*,bool) override;
-    void climb_only(std::complex<double>&,motion_base*) override;
+    void crossings_up(double z, double xmin, int &n) override;
     void draw(motion_base *out) override { out->straight_move(end); }
     void offset(double distance) override {
 	std::complex<double> d=I*distance*(start-end)/std::abs(start-end);
@@ -151,61 +147,20 @@ void straight_segment::intersection_z(double x, intersections_t &is)
 	    /(end.imag()-start.imag())*(end.real()-start.real())+start.real());
 }
 
-bool straight_segment::climb(std::complex<double> &location,
-    motion_base *output
-) {
-    if(end.imag()+tolerance<start.imag())
-	return 1; // not climbing
-    if(std::abs(location-start)>tolerance)
-	throw(std::string("How did we get here?"));
-    output->straight_move(end);
-    location=end;
-    return 0;
-}
-
-void straight_segment::climb_only(std::complex<double> &location,
-    motion_base *output
-) {
-    // Same flatness test as climb(), the two must not disagree
-    if(end.imag()+tolerance<start.imag())
-	return; // not climbing
-    intersections_t is;
-    intersection_z(location.imag(),is);
-    if(is.empty())
-	return;
-
-    location.real(is.front());
-    output->straight_move(location);
-    output->straight_move(end);
-    location=end;
-    return;
-}
-
-bool straight_segment::dive(std::complex<double> &location,
-    double x,
-    motion_base *output, bool fast)
+void straight_segment::crossings_up(double z, double xmin, int &n)
 {
-    if(start.imag()<=end.imag()+tolerance) 	// Not a diving segment
-	return 1;
-    if(x<end.imag()) {
-	if(fast)
-	    output->straight_rapid(end);
-	else
-	    output->straight_move(end);
-	location=end;
-	return 0;
-    }
-    intersections_t is;
-    intersection_z(x,is);
-    if(is.empty())
-	throw(std::string("x too large in straight dive"));
-    std::complex<double> ep(is.front(),x);
-    if(fast)
-	output->straight_rapid(ep);
-    else
-	output->straight_move(ep);
-    location=ep;
-    return 0;
+    double r0=real(start), r1=real(end);
+    if(std::abs(r1-r0)<tolerance)
+	return;
+    double rmin=std::min(r0,r1), rmax=std::max(r0,r1);
+    if(z<rmin-tolerance || z>rmax+tolerance)
+	return;
+    if(std::abs(z-rmax)<tolerance)
+	return;
+    double t=(z-r0)/(r1-r0);
+    double im=imag(start)+t*(imag(end)-imag(start));
+    if(im>xmin+tolerance)
+	++n;
 }
 
 class round_segment:public segment {
@@ -224,9 +179,7 @@ public:
     {
     }
     void intersection_z(double x,intersections_t &is) override;
-    bool climb(std::complex<double>&,motion_base*) override;
-    bool dive(std::complex<double>&,double,motion_base*,bool) override;
-    void climb_only(std::complex<double>&,motion_base*) override;
+    void crossings_up(double z, double xmin, int &n) override;
     void draw(motion_base *out) override { out->circular_move(ccw,center,end);}
     void offset(double distance) override {
 	double factor=(std::abs(start-center)+(ccw? 1:-1)*distance)
@@ -277,14 +230,32 @@ private:
 
 inline bool round_segment::on_segment(std::complex<double> p)
 {
-    // The cross products scale with the radius, so the tolerance must too
-    double eps=tolerance*std::abs(start-center);
-    if(ccw)
-	return imag(conj(start-center)*(p-center))>=-eps
-	    && imag(conj(end-center)*(p-center))<=eps;
-    else
-	return imag(conj(start-center)*(p-center))<=eps
-	    && imag(conj(end-center)*(p-center))>=-eps;
+    double radius=std::abs(start-center);
+    if(!(radius>0))
+	return true;
+    // A complete circle: start and end coincide, any point on it counts.
+    if(std::abs(start-end)<tolerance)
+	return std::abs(std::abs(p-center)-radius)<=tolerance;
+    /* Angular sweep, not two half planes: the intersection of the half
+       planes is the wrong wedge for arcs spanning more than 180 degrees. */
+    double two_pi=2*std::acos(-1.0);
+    auto ang=[](std::complex<double> d) {
+	return std::atan2(imag(d), real(d));
+    };
+    auto norm=[&](double a) {
+	while(a<0)
+	    a+=two_pi;
+	while(a>=two_pi)
+	    a-=two_pi;
+	return a;
+    };
+    double a0=ang(start-center);
+    double a1=ang(end-center);
+    double ap=ang(p-center);
+    double sweep=ccw? norm(a1-a0):norm(a0-a1);
+    double d=ccw? norm(ap-a0):norm(a0-ap);
+    // The angular tolerance scales with the radius, like the old test.
+    return d<=sweep+tolerance/radius;
 }
 
 void round_segment::intersection_z(double x, intersections_t &is)
@@ -307,82 +278,22 @@ void round_segment::intersection_z(double x, intersections_t &is)
 	is.push_back(real(p2));
 }
 
-bool round_segment::climb(std::complex<double> &location,
-    motion_base *output
-) {
-    /* An arc often starts at its own apex, so location and centre share a Z
-       up to rounding.  Without the tolerance the last bit decides between
-       climbing and a pocket wall, and pocket() can alternate forever.
-    */
-    if(!ccw) { // G2
-	if(location.real()>center.real()+tolerance)
-	    return 1;
-	if(std::abs(location-end)>1e-3)
-	    output->circular_move(ccw,center,end);
-	location=end;
-	return 0;
-    } else {
-	if(location.real()<center.real()-tolerance)
-	    return 1;
-	std::complex<double> ep=end;
-	if(end.real()<center.real()) {
-	    ep.real(center.real());
-	    ep.imag(center.imag()+std::abs(start-center));
-	}
-	if(std::abs(location-ep)>1e-3)
-	    output->circular_move(ccw,center,ep);
-	location=ep;
-	return 1;
-    }
-}
-
-bool round_segment::dive(std::complex<double> &location,
-    double x, motion_base *output, bool
-) {
-    if(std::abs(location-end)<tolerance || real(location-end)<=tolerance) {
-	location=end;
-	return 0;
-    }
-    intersections_t is;
-    intersection_z(x,is);
-    if(is.empty())
-	intersection_z(x-tolerance,is);
-
-    if(ccw) { // G3
-	if(location.real()-tolerance>center.real())
-	    return 1;
-	if(is.empty() || is.back()>real(center)) {
-	    output->circular_move(ccw,center,end);
-	    location=end;
-	    return 0;
-	} else {
-	    std::complex<double> ep(is.back(),x);
-	    output->circular_move(ccw,center,ep);
-	    location=ep;
-	    return 0;
-	}
-    } else {
-	// Apex, see climb()
-	if(location.real()<=center.real()+tolerance)
-	    return 1; // we're already climbing
-	if(is.empty()) {
-	    // Curve not hit, move to the end
-	    output->circular_move(ccw,center,end);
-	    location=end;
-	    return 0;
-	} else if(is.front()<real(center)) {
-	    // also is.size()==1
-	    // also std::abs(location-start)<tolerance
-	    // curve hit at the back side only, let pocket decrement x
-	    return 0;
-	} else {
-	    // Arc cut twice, move to the front intersection
-	    std::complex<double> ep(is.front(),x);
-	    output->circular_move(ccw,center,ep);
-	    location=ep;
-	    return 0;
-	}
-    }
+void round_segment::crossings_up(double z, double xmin, int &n)
+{
+    double radius=std::abs(start-center);
+    double dz=z-real(center);
+    if(std::abs(dz)>radius+tolerance)
+	return;
+    double s=(radius-dz)*(radius+dz);
+    if(s<0)
+	s=0;
+    s=sqrt(s);
+    std::complex<double> p1(z, imag(center)+s);
+    std::complex<double> p2(z, imag(center)-s);
+    if(imag(p1)>xmin+tolerance && on_segment(p1))
+	++n;
+    if(imag(p2)>xmin+tolerance && on_segment(p2))
+	++n;
 }
 
 void round_segment::visit_x(std::function<void(double)> const &fn)
@@ -427,41 +338,6 @@ void round_segment::visit_x(std::function<void(double)> const &fn)
     fn(imag(end));
 }
 
-void round_segment::climb_only(std::complex<double> &location,
-    motion_base *output
-) {
-    intersections_t is;
-    intersection_z(location.imag(),is);
-    if(is.empty())
-	return;
-    // Apex, see climb()
-    if(!ccw) { // G2
-	if(is.back()>center.real()+tolerance)
-	    return;
-	location.real(is.back());
-	output->straight_move(location);
-	if(std::abs(location-end)>1e-3)
-	    output->circular_move(ccw,center,end);
-	location=end;
-	return;
-    } else {
-	if(is.front()<center.real()-tolerance)
-	    return;
-	location.real(is.front());
-	output->straight_move(location);
-	std::complex<double> ep=end;
-	if(end.real()<center.real()) {
-	    ep.real(center.real());
-	    ep.imag(center.imag()+std::abs(start-center));
-	}
-	if(std::abs(location-ep)>1e-3)
-	    output->circular_move(ccw,center,ep);
-	location=ep;
-	return;
-    }
-}
-
-
 ////////////////////////////////////////////////////////////////////////////////
 void straight_segment::intersect(segment *p)
 {
@@ -476,14 +352,30 @@ void round_segment::intersect(segment *p)
 void straight_segment::intersect_end(straight_segment *p)
 {
     // correct end of p and start of this
-    auto rot=conj(start-end)/std::abs(start-end);
+    auto len=std::abs(start-end);
+    if(!(len>tolerance)) {
+	start=p->end;
+	return;
+    }
+    auto rot=conj(start-end)/len;
     auto ps=(p->start-end)*rot;
     auto pe=(p->end-end)*rot;
-    if(imag(ps-pe)==0) {
-	throw(std::string("Cannot intersect parallel lines"));
+    if(std::abs(imag(ps-pe))<tolerance) {
+	/* Parallel: do not throw (a closing shoulder often hits this).
+	   Close the gap at the midpoint so offset/D can continue. */
+	auto mid=(p->end+start)/2.0;
+	start=p->end=mid;
+	return;
     }
     auto f=imag(ps)/imag(ps-pe);
     auto is=(ps+f*(pe-ps))/rot+end;
+    /* A near-parallel pair can push the vertex arbitrarily far and look
+       like a bulge.  Keep the join near the original ends. */
+    if(std::abs(is-start)>10*len && std::abs(is-p->end)>10*std::abs(p->end-p->start)) {
+	auto mid=(p->end+start)/2.0;
+	start=p->end=mid;
+	return;
+    }
     start=p->end=is;
 }
 
@@ -669,11 +561,10 @@ class g7x:public  std::list<std::unique_ptr<segment>> {
     int flip_state{};
     double unit{1};
     std::unique_ptr<motion_base> unscaled;
-    std::deque<std::complex<double>> pocket_starts;
 private:
-    void pocket(int cycle, std::complex<double> location, iterator p,
-	motion_base *out);
+    void scan_rough(int cycle, motion_base *out);
     void add_distance(double distance);
+    bool in_stock(double z, double x);
 
     /* Rotate profile by 90 degrees */
     void rotate() {
@@ -832,7 +723,8 @@ public:
     */
     void do_g71(motion_base *out, int cycle, double x, double z,
 	double u, double w,
-	double d, double i, double r, bool do_rotate=false
+	double d, double i, double r, bool do_rotate=false,
+	bool do_envelope=false
     ) {
 	front()->sp()=std::complex<double>(z,x);
 	normalise();
@@ -864,126 +756,150 @@ public:
 		back()->ep(),ep
 	    ));
 	}
-	pocket_starts.push_back(front()->sp());
-	pocket(cycle,front()->sp(), begin(), swapped_out.get());
+	scan_rough(cycle, swapped_out.get());
+	if(do_envelope) {
+	    /* Follow the offset profile once so a native G71/G72 does not
+	       leave steps of one depth of cut on tapers and arcs.  The path
+	       is already offset by D, so this leaves a uniform finishing
+	       allowance.  Cycles that skip pockets must not do this. */
+	    swapped_out->straight_rapid(front()->sp());
+	    for(auto &p : *this)
+		p->draw(swapped_out.get());
+	}
     }
 
     void do_g72(motion_base *out, int cycle, double x, double z,
 	double u, double w,
-	double d, double i, double r
+	double d, double i, double r, bool do_envelope=false
     ) {
-	do_g71(out, cycle, x, z, u, w, d, i, r, true);
+	do_g71(out, cycle, x, z, u, w, d, i, r, true, do_envelope);
     }
 };
 
 
-void g7x::pocket(int cycle, std::complex<double> location, iterator p,
-    motion_base *out
-) {
-    // Count the pass levels off the start, so they do not accumulate rounding
-    double top=imag(pocket_starts.back());
-    int steps=0;
-    double x=top;
+bool g7x::in_stock(double z, double x)
+{
+    int n=0;
+    for(auto &p : *this)
+	p->crossings_up(z, x, n);
+    return (n%2)==0;
+}
 
-    if(cycle==2) {
-	// This skips the initial roughing pass
-	for(; p!=end(); ++p) {
-	    if((*p)->dive(location,-1e9,out,p==begin()))
-		break;
-	}
-	cycle=3;
+void g7x::scan_rough(int cycle, motion_base *out)
+{
+    if(empty())
+	return;
+    double x_top=imag(front()->sp());
+    double z0=real(front()->sp());
+    double x_min=x_top, x_max=x_top;
+    double z_lo=z0, z_hi=z0;
+    auto track_x=[&](double xv) {
+	x_min=std::min(x_min, xv);
+	x_max=std::max(x_max, xv);
+    };
+    for(auto &p : *this) {
+	/* visit_x also sees the inside of arcs, so the deepest pass reaches
+	   the real bottom of a radius, not just its end points. */
+	p->visit_x(track_x);
+	z_lo=std::min(z_lo, std::min(real(p->sp()), real(p->ep())));
+	z_hi=std::max(z_hi, std::max(real(p->sp()), real(p->ep())));
     }
+    if(!(delta>0) || x_min>=x_top-tolerance)
+	return;
+    /* Rapids travel at x_clear, above every point of the profile, so no
+       rapid ever moves in Z at a cutting X. */
+    double x_clear=std::max(x_top, x_max);
 
-    while(p!=end()) {
-	while(x-tolerance>imag(location))
-	    x=top-(++steps)*delta;
-	if((*p)->dive(location,x,out,p==begin())) {
-	    if(cycle==1) {
-		/* After the initial roughing pass, move along the final
-		   contour and we're done
-		*/
-		for(; p!=end(); ++p)
-		    (*p)->climb_only(location,out);
-	    } else {
-		/* Move along the final contour until a pocket is found,
-		   then start cutting that pocket
-		*/
-		for(; p!=end(); ++p) {
-		    if((*p)->climb(location,out)) {
-			if(cycle==3) {
-			    // Equal X levels must not turn on rounding
-			    if(imag(location)>imag(pocket_starts.back())+tolerance
-				&& pocket_starts.size()>1
-			    ) {
-				pocket_starts.pop_back();
-			    }
-			    if(pocket_starts.size()==1) {
-				pocket_starts.push_back(location);
-			    }
-			}
-			pocket(cycle, location,p,out);
-			return;
-		    }
-		}
-	    }
-	    return;
+    auto unique_eps=[](std::vector<double> &v, double eps) {
+	std::sort(v.begin(), v.end());
+	std::vector<double> o;
+	for(double t : v) {
+	    if(o.empty() || std::abs(t-o.back())>eps)
+		o.push_back(t);
 	}
+	v.swap(o);
+    };
 
-        // We have added our move commands for the last path, we end the
-        // recursive function before calculating and adding intersections.
-	if (p==std::prev(end()))
-	    return;
-
-	if(std::abs(imag(location)-x)>tolerance || (*p)->ep()==location) {
-	    /* Our x coordinate is beyond the current segment, move onto
-	       the next
-	    */
-	    ++p;
-	    continue;
-	}
-
-	for(auto ip=p; ip!=end(); ++ip) {
+    struct Interval { double za, zb; };
+    auto intervals_at=[&](double x)->std::vector<Interval> {
+	std::vector<double> zs;
+	for(auto &p : *this) {
 	    segment::intersections_t is;
-	    (*ip)->intersection_z(location.imag(),is);
-	    if(is.empty())
-		continue;
-
-	    /* We can hit the diving curve, if its a circle */
-	    double destination_z=ip!=p? is.front():is.back();
-	    double distance=std::abs(destination_z-real(location));
-	    if(destination_z-tolerance>real(location))
-		continue; // Hitting the diving curve at the starting point only
-	    if(distance<tolerance) {
-		if(p==ip)
-		    // Hitting the diving curve at the starting point.
-		    continue;
-		else if(std::abs(location-(*ip)->sp())<tolerance) {
-		    // Another curve, at the entry point, move to that curve
-		    p=ip;
-		    break;
-		} else {
-		    // Just a zero length segment, consider it done
-		    x=top-(++steps)*delta;
-		    break;
-		}
-	    }
-
-	    std::complex<double> dest=location;
-	    dest.real(destination_z);
-	    out->straight_move(dest);
-	    // If the travelled distance is too small for the entire escape
-	    double escape_scale=std::min(1.0,distance/2/real(escape));
-	    dest+=escape_scale*escape;
-	    out->straight_rapid(dest);
-	    dest=location-conj(escape_scale*escape);
-	    out->straight_rapid(dest);
-	    if(p==begin())
-		out->straight_rapid(location);
-	    else
-		out->straight_move(location);
-	    x=top-(++steps)*delta;
-	    break;
+	    p->intersection_z(x, is);
+	    for(double t : is)
+		zs.push_back(t);
 	}
+	zs.push_back(z0);
+	zs.push_back(z_lo);
+	zs.push_back(z_hi);
+	unique_eps(zs, tolerance);
+	std::vector<Interval> cuts;
+	for(size_t i=0; i+1<zs.size(); ++i) {
+	    double a=zs[i], b=zs[i+1];
+	    if(std::abs(b-a)<2*tolerance)
+		continue;
+	    if(in_stock(0.5*(a+b), x))
+		cuts.push_back({a, b});
+	}
+	auto dist=[&](const Interval &iv) {
+	    return std::min(std::abs(iv.za-z0), std::abs(iv.zb-z0));
+	};
+	std::sort(cuts.begin(), cuts.end(),
+	    [&](const Interval &A, const Interval &B) { return dist(A)<dist(B); });
+	/* The interval holding the start face is the outer envelope that
+	   G7x.1 already roughed; pockets are everything else. */
+	auto envelope=[&](const Interval &iv) {
+	    return iv.za-tolerance<=z0 && z0<=iv.zb+tolerance;
+	};
+	if(cycle==1) {
+	    cuts.erase(std::remove_if(cuts.begin(), cuts.end(),
+		[&](const Interval &iv) { return !envelope(iv); }), cuts.end());
+	} else if(cycle==2) {
+	    cuts.erase(std::remove_if(cuts.begin(), cuts.end(), envelope),
+		cuts.end());
+	}
+	return cuts;
+    };
+
+    double passes=(x_top-x_min)/delta+8;
+    if(!(passes<100000))
+	passes=100000;
+    int max_pass=(int)passes;
+    if(max_pass<2)
+	max_pass=2;
+
+    for(int pass=1; pass<=max_pass; ++pass) {
+	double x=x_top-pass*delta;
+	bool last=false;
+	if(x<=x_min+tolerance) {
+	    x=x_min;
+	    last=true;
+	}
+	auto cuts=intervals_at(x);
+	for(auto &iv : cuts) {
+	    double z_enter, z_exit;
+	    if(std::abs(iv.za-z0)<=std::abs(iv.zb-z0)) {
+		z_enter=iv.za;
+		z_exit=iv.zb;
+	    } else {
+		z_enter=iv.zb;
+		z_exit=iv.za;
+	    }
+	    /* Travel at the clearance X and plunge at the entry Z: no rapid
+	       ever moves to a cutting X while crossing the part. */
+	    out->straight_rapid(std::complex<double>(z_enter, x_clear));
+	    out->straight_rapid(std::complex<double>(z_enter, x));
+	    out->straight_move(std::complex<double>(z_exit, x));
+	    double distance=std::abs(z_exit-z_enter);
+	    double er=std::max(std::abs(real(escape)), tolerance);
+	    double esc=std::min(1.0, distance/2/er);
+	    std::complex<double> up=std::complex<double>(z_exit, x)+esc*escape;
+	    out->straight_rapid(up);
+	    out->straight_rapid(std::complex<double>(real(up), x_clear));
+	}
+	out->straight_rapid(std::complex<double>(z0, x_clear));
+	if(last)
+	    break;
     }
 }
 
@@ -995,6 +911,8 @@ void g7x::add_distance(double distance) {
 	distance=-distance;
     auto of(std::move(front()));
     pop_front();
+    if(empty())
+	throw(std::string("Profile disappeared while applying stock allowance"));
     /* Offset in steps of at most half the shortest segment.  Track what is
        left, not what has been added, so the last step lands exactly instead
        of leaving a residue worth another pass.  A step that no longer
@@ -1003,6 +921,8 @@ void g7x::add_distance(double distance) {
     double remaining=std::abs(distance);
     double sign=distance<0? -1.0:1.0;
     while(remaining>tolerance) {
+	if(empty())
+	    throw(std::string("Profile disappeared while applying stock allowance"));
 	double step=1e9;
 	for(auto &p : *this)
 	    step=std::min(step,p->radius()/2);
@@ -1021,24 +941,36 @@ void g7x::add_distance(double distance) {
 		++p;
 	}
 
+	if(size()<2)
+	    break;
+
 	for(auto p=begin(); p!=--end(); ++p) {
 	    auto n=p; ++n;
 	    if(real((*p)->ep()-(*n)->sp())>1e-2) {
-		// insert connecting arc
+		/* Convex-corner gap: a fillet of radius ~|step| is correct.
+		   A much larger arc is the #2939 bulge; join with a straight. */
 		auto s((*p)->dup());
 		auto e((*n)->dup());
 		s->offset(-max_distance);
 		e->offset(-max_distance);
 		auto center=(s->ep()+e->sp())/2.0;
-		emplace(n, std::make_unique<round_segment>(
-		    distance>0,(*p)->ep(),center,(*n)->sp()));
+		double arcr=std::abs((*p)->ep()-center);
+		if(arcr>std::abs(max_distance)*2+1e-3) {
+		    emplace(n, std::make_unique<straight_segment>(
+			(*p)->ep(),(*n)->sp()));
+		} else {
+		    emplace(n, std::make_unique<round_segment>(
+			distance>0,(*p)->ep(),center,(*n)->sp()));
+		}
 		++p;
 	    }
 	}
 
+	if(size()<2)
+	    break;
+
 	for(auto p=begin(); p!=--end(); ++p) {
 	    if(!(*p)->monotonic()) {
-		std::cout << "Oops " << (*p)->sp()-(*p)->ep() << std::endl;
 		auto pp=p; --pp;
 		if((*p)->radius()<(*pp)->radius())
 		    erase(p);
@@ -1240,6 +1172,26 @@ int Interp::convert_g7x(int mode,
     original_block.z_number=z;
     g7x_clear_cycle_words(block);
 
+    /* On ERS/CHP, put the interpreter pose back so a failed cycle does not
+       leave current_x/z / motion_mode at a half-built profile point. */
+    struct RestorePose {
+	setup_pointer s;
+	double cx, cz;
+	int motion;
+	bool armed;
+	RestorePose(setup_pointer st):
+	    s(st), cx(st->current_x), cz(st->current_z),
+	    motion(st->motion_mode), armed(true) {}
+	void dismiss() { armed=false; }
+	~RestorePose() {
+	    if (armed) {
+		s->current_x=cx;
+		s->current_z=cz;
+		s->motion_mode=motion;
+	    }
+	}
+    } pose(settings);
+
     if (!fanuc || original_block.x_flag || original_block.z_flag) {
 	auto cutter_comp=settings->cutter_comp_side;
 	settings->cutter_comp_side=CUTTER_COMP::OFF;
@@ -1341,6 +1293,8 @@ int Interp::convert_g7x(int mode,
 			ERS("G7X error: both R and I or K flag used for arc");
 		    double rr=block->r_number;
 		    center=(start+end)/2.0;
+		    CHKS((rr*rr+tolerance<norm(end-start)/4.0),
+			_("G7X error: arc radius too small to reach the end point"));
 		    auto dd=I*sqrt((rr*rr-norm(end-start)/4)/norm(end-start))
 			*(end-start);
 		    if(settings->motion_mode==30)
@@ -1447,59 +1401,133 @@ int Interp::convert_g7x(int mode,
 		named0(st->sub_context[0].named_params),
 		named_local(st->sub_context[st->call_level].named_params),
 		level(st->call_level) {}
-	    ~RestoreParams() {
+	    void restore() {
 		std::copy(numbered.begin(), numbered.end(), s->parameters);
 		s->sub_context[0].named_params = named0;
 		s->sub_context[level].named_params = named_local;
 	    }
+	    ~RestoreParams() { restore(); }
 	} restore_params(settings);
 
-	CHKS((fseek(settings->file_pointer, 0, SEEK_SET) != 0),
-	    _("G%d.%d could not rewind the program to find N%d"),
+	/* Search forward from this cycle first: a duplicate N before G71.3
+	   must not be taken as the profile.  If the range is not found there
+	   (G70.3 is normally placed after the profile), rewind and search
+	   from the start of the program, as Fanuc does. */
+	CHKS((restore.pos < 0),
+	    _("G%d.%d could not read the program to find N%d"),
 	    cycle, subcycle, n_start);
 
-	bool collecting=false;
 	bool found_p=false;
 	bool found_q=false;
-	char raw_line[LINELEN];
-	char line[LINELEN];
-
-	while (fgets(raw_line, LINELEN, settings->file_pointer)) {
-	    settings->parameter_occurrence = 0;
-	    settings->named_parameter_occurrence = 0;
-	    if (strlen(raw_line) == (LINELEN - 1))
-		ERS("G7X error: line too long while reading P-Q profile");
-	    for (int index = (int)strlen(raw_line) - 1;
-		 index >= 0 && isspace(static_cast<unsigned char>(raw_line[index]));
-		 index--)
-		raw_line[index] = 0;
-	    rs274ngc_strlcpy(line, raw_line, LINELEN);
-	    CHP(close_and_downcase(line));
-	    if (line[0] == 0 || line[0] == '/' ||
-		(line[0] == '%' && line[1] == 0))
-		continue;
-
-	    CHP(parse_line(line, block, settings));
-	    /* Apply # assignments on every scanned line, including those
-	       between G71.3 and N(P), so the profile sees the new values. */
-	    CHP(apply_params());
-
-	    if (!collecting && block->n_number == n_start) {
-		collecting = true;
-		found_p = true;
-	    }
-	    if (collecting) {
-		CHP(append_block());
-		if (block->n_number == n_end) {
-		    found_q = true;
+	int scan_motion_mode=settings->motion_mode;
+	long p_line_pos=-1, q_line_pos=-1;
+	/* Also record where the range starts and ends, so a later G70.3 with
+	   the same P/Q numbers can read exactly what G71.3 used. */
+	auto do_scan=[&](long start_pos) -> int {
+	    found_p=false;
+	    found_q=false;
+	    p_line_pos=-1;
+	    q_line_pos=-1;
+	    CHKS((fseek(settings->file_pointer, start_pos, SEEK_SET) != 0),
+		_("G%d.%d could not read the program to find N%d"),
+		cycle, subcycle, n_start);
+	    bool collecting=false;
+	    char raw_line[LINELEN];
+	    char line[LINELEN];
+	    for(;;) {
+		long line_pos=ftell(settings->file_pointer);
+		if (fgets(raw_line, LINELEN, settings->file_pointer) == NULL)
 		    break;
+		settings->parameter_occurrence = 0;
+		settings->named_parameter_occurrence = 0;
+		if (strlen(raw_line) == (LINELEN - 1))
+		    ERS("G7X error: line too long while reading P-Q profile");
+		for (int index = (int)strlen(raw_line) - 1;
+		     index >= 0 && isspace(static_cast<unsigned char>(raw_line[index]));
+		     index--)
+		    raw_line[index] = 0;
+		rs274ngc_strlcpy(line, raw_line, LINELEN);
+		CHP(close_and_downcase(line));
+		/* Block delete, like read_text: only drop an N hidden on a
+		   '/' line when block delete is actually enabled. */
+		if (line[0] == 0 ||
+		    (line[0] == '/' && GET_BLOCK_DELETE()) ||
+		    (line[0] == '%' && line[1] == 0))
+		    continue;
+
+		CHP(parse_line(line, block, settings));
+		/* Apply # assignments on every scanned line, including those
+		   between G71.3 and N(P), so the profile sees the new values. */
+		CHP(apply_params());
+
+		if (!collecting && block->n_number == n_start) {
+		    collecting = true;
+		    found_p = true;
+		    p_line_pos = line_pos;
+		}
+		if (collecting) {
+		    CHP(append_block());
+		    if (block->n_number == n_end) {
+			found_q = true;
+			q_line_pos = line_pos;
+			break;
+		    }
 		}
 	    }
+	    return INTERP_OK;
+	};
+
+	auto reset_scan=[&]() {
+	    /* Undo the speculative # of a failed pass before collecting
+	       again. */
+	    restore_params.restore();
+	    path.clear();
+	    start=std::complex<double>(z,x);
+	    settings->current_x=imag(start);
+	    settings->current_z=real(start);
+	    settings->motion_mode=scan_motion_mode;
+	    first_profile_block=true;
+	    type_ii=false;
+	    first_motion_mode=-1;
+	    have_profile_f=false;
+	    profile_f=0;
+	};
+
+	/* G70.3 normally sits after the profile that G71.3 already found, so
+	   reuse that exact range when the numbers match.  Otherwise search:
+	   G70.3 from the start of the program (Fanuc), G71.3 forward from
+	   the cycle; fall back to the other order if the range is missing. */
+	bool cached = (cycle==70) &&
+	    settings->g7x_profile_valid &&
+	    (strcmp(settings->g7x_profile_file, settings->filename)==0) &&
+	    settings->g7x_profile_p==n_start &&
+	    settings->g7x_profile_q==n_end;
+	bool done=false;
+	if (cached) {
+	    CHP(do_scan(settings->g7x_profile_p_pos));
+	    done = found_p && found_q;
+	    if (!done)
+		reset_scan();
 	}
-	CHKS(!found_p, _("G%d.%d P sequence number N%d not found"),
+	if (!done) {
+	    CHP(do_scan(cycle==70 ? 0 : restore.pos));
+	    if (!found_p || !found_q) {
+		reset_scan();
+		CHP(do_scan(cycle==70 ? restore.pos : 0));
+	    }
+	}
+	if (cycle==71 && found_p && found_q && p_line_pos>=0 && q_line_pos>=0) {
+	    rs274ngc_strlcpy(settings->g7x_profile_file, settings->filename, LINELEN);
+	    settings->g7x_profile_p_pos=p_line_pos;
+	    settings->g7x_profile_q_pos=q_line_pos;
+	    settings->g7x_profile_p=n_start;
+	    settings->g7x_profile_q=n_end;
+	    settings->g7x_profile_valid=true;
+	}
+	CHKS(!found_p, _("G%d.%d P sequence number N%d not found in the program"),
 	    cycle, subcycle, n_start);
-	CHKS(!found_q, _("G%d.%d Q sequence number N%d not found"),
-	    cycle, subcycle, n_end);
+	CHKS(!found_q, _("G%d.%d Q sequence number N%d not found after N%d"),
+	    cycle, subcycle, n_end, n_start);
 	*block = original_block;
 	g7x_clear_cycle_words(block);
     } else {
@@ -1522,6 +1550,7 @@ int Interp::convert_g7x(int mode,
 	if (fanuc)
 	    ERS(_("G%d.%d profile between P and Q is empty or too short"),
 		cycle, subcycle);
+	pose.dismiss();
 	return INTERP_OK;
     }
 
@@ -1624,7 +1653,7 @@ int Interp::convert_g7x(int mode,
 		));
 	    }
 	    path.do_g71(&motion, fanuc ? (type_ii ? 0 : 1) : subcycle,
-		x,z,u,w,d,i,r);
+		x,z,u,w,d,i,r, false, !fanuc && subcycle==0);
 	    break;
 	case 72:
 	    if(std::abs(imag(dback))>0 && real(dfront)*(z-real(start))<0) {
@@ -1633,7 +1662,8 @@ int Interp::convert_g7x(int mode,
 		    start, end
 		));
 	    }
-	    path.do_g72(&motion,subcycle,x,z,u,w,d,i,r);
+	    path.do_g72(&motion,subcycle,x,z,u,w,d,i,r,
+		!fanuc && subcycle==0);
 	    break;
 	}
     } catch(std::string &s) {
@@ -1660,6 +1690,7 @@ int Interp::convert_g7x(int mode,
 	settings->g7x_skip_active = false;
     }
 
+    pose.dismiss();
     return INTERP_OK;
 }
 #endif

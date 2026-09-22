@@ -602,7 +602,8 @@ void COMMENT(const char *comment) {
 }
 
 void SET_TOOL_TABLE_ENTRY(int /*pocket*/, int /*toolno*/, const EmcPose& /*offset*/, double /*diameter*/,
-                          double /*frontangle*/, double /*backangle*/, int /*orientation*/) {
+                          double /*frontangle*/, double /*backangle*/, int /*orientation*/,
+                          const EmcPose& /*wear*/, double /*wear_diameter*/) {
 }
 
 void USE_TOOL_LENGTH_OFFSET(const EmcPose& offset) {
@@ -749,7 +750,7 @@ void GET_EXTERNAL_PARAMETER_FILE_NAME(char *name, int max_size) {
 }
 CANON_UNITS GET_EXTERNAL_LENGTH_UNIT_TYPE() { return CANON_UNITS_INCHES; }
 CANON_TOOL_TABLE GET_EXTERNAL_TOOL_TABLE(int pocket) {
-    CANON_TOOL_TABLE tdata = {-1,-1,{{0,0,0},0,0,0,0,0,0},0,0,0,0,{}};
+    CANON_TOOL_TABLE tdata = CANON_TOOL_TABLE_INIT;
     canon_guard([&]{
         py::object result = py::handle(parse_state.callback).attr("get_tool")(pocket);
         if(!PyTuple_Check(result.ptr()) || PyTuple_GET_SIZE(result.ptr()) != 14)

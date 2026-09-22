@@ -3117,7 +3117,8 @@ void USE_NO_SPINDLE_FORCE(void)
 
 /* this is called with distances in external (machine) units */
 void SET_TOOL_TABLE_ENTRY(int pocket, int toolno, const EmcPose& offset, double diameter,
-                          double frontangle, double backangle, int orientation) {
+                          double frontangle, double backangle, int orientation,
+                          const EmcPose& wear, double wear_diameter) {
     auto o = std::make_unique<EMC_TOOL_SET_OFFSET>();
     flush_segments();
     o->pocket = pocket;
@@ -3127,6 +3128,9 @@ void SET_TOOL_TABLE_ENTRY(int pocket, int toolno, const EmcPose& offset, double 
     o->frontangle = frontangle;
     o->backangle = backangle;
     o->orientation = orientation;
+    o->wear = wear;
+    o->wear_diameter = wear_diameter;
+    o->set_wear = 1;
     interp_list.append(std::move(o));
 }
 
@@ -3732,16 +3736,10 @@ void CANON_ERROR(const char *fmt, ...)
   */
 CANON_TOOL_TABLE GET_EXTERNAL_TOOL_TABLE(int idx)
 {
-    CANON_TOOL_TABLE tdata;
+    CANON_TOOL_TABLE tdata = tooldata_entry_init();
 
     if (idx < 0 || idx >= CANON_POCKETS_MAX) {
-        tdata.toolno = -1;
         tdata.pocketno = 0;
-        ZERO_EMC_POSE(tdata.offset);
-        tdata.frontangle = 0.0;
-        tdata.backangle = 0.0;
-        tdata.diameter = 0.0;
-        tdata.orientation = 0;
     } else {
         if (tooldata_get(&tdata,idx) != IDX_OK) {
             rcs_print_error("UNEXPECTED idx %s %d\n",__FILE__,__LINE__);

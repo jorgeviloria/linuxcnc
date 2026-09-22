@@ -89,10 +89,10 @@ int Interp::check_g_codes(block_pointer block,   //!< pointer to a block to be c
     CHKS((mode1 == G_2 || mode1 == G_3), _("G4 not allowed with G2 or G3 because they both use P"));
   } else if (mode0 == G_10) {
     (block->p_number >= 0) ? p_int = (int) (block->p_number +0.5) :p_int = (int) (block->p_number -0.5);
-    CHKS((block->l_number != 0 && block->l_number != 2 && block->l_number != 1 && block->l_number != 20 && block->l_number != 10 && block->l_number != 11), _("Line with G10 does not have L0, L1, L10, L11, L2, or L20"));
+    CHKS((block->l_number != 0 && block->l_number != 2 && block->l_number != 1 && block->l_number != 20 && block->l_number != 10 && block->l_number != 11 && block->l_number != 12), _("Line with G10 does not have L0, L1, L10, L11, L12, L2, or L20"));
     CHKS((((block->p_number + 0.0001) - p_int) > 0.0002),  _("P value not an integer with G10"));
     CHKS((((block->l_number == 2 || block->l_number == 20) && ((p_int < 0) || (p_int > 9)))), _("P value out of range (0-9) with G10 L%d"), block->l_number);
-    CHKS((((block->l_number == 1 || block->l_number == 10 || block->l_number == 11) && p_int < 1)), _("P value out of range with G10 L%d"), block->l_number);
+    CHKS((((block->l_number == 1 || block->l_number == 10 || block->l_number == 11 || block->l_number == 12) && p_int < 1)), _("P value out of range with G10 L%d"), block->l_number);
   } else if (mode0 == G_28) {
   } else if (mode0 == G_30) {
   } else if (mode0 == G_5_3) {
@@ -101,6 +101,10 @@ int Interp::check_g_codes(block_pointer block,   //!< pointer to a block to be c
   } else if (mode1 == G_6_2){
   } else if (mode0 == G_28_1 || mode0 == G_30_1) {
   } else if (mode0 == G_28_2) {   // G-code homing
+  } else if (mode0 == G_50) {
+    CHKS((!block->s_flag && !block->x_flag && !block->z_flag &&
+          !block->u_flag && !block->w_flag),
+         _("G50 requires S (spindle speed clamp) or coordinate words"));
   } else if (mode0 == G_52) {
   } else if (mode0 == G_53) {
     CHKS(((block->motion_to_be != G_0) && (block->motion_to_be != G_1)),
@@ -371,6 +375,7 @@ int Interp::check_other_codes(block_pointer block)       //!< pointer to a block
 
   if (block->r_flag) {
     CHKS(((motion != G_2) && (motion != G_3) && (motion != G_76) && (motion != G_6_2) &&
+         (motion != G_90) &&
          (motion != G_71) && (motion != G_71_1) && (motion != G_71_2) &&
          (motion != G_71_3) &&
          (motion != G_72) && (motion != G_72_1) && (motion != G_72_2) &&
@@ -404,6 +409,13 @@ int Interp::check_other_codes(block_pointer block)       //!< pointer to a block
 
     CHKS((!block->i_flag || !block->j_flag || !block->k_flag),
             NCE_I_J_OR_K_WORDS_MISSING_WITH_G76);
+  }
+
+  if (motion == G_92) {
+    CHKS((!block->f_flag && _setup.feed_rate == 0.0),
+         _("F word missing or zero with G92 threading cycle"));
+    CHKS((block->r_flag || block->i_flag),
+         _("Taper threading is not supported with G92; use G76"));
   }
 
   return INTERP_OK;

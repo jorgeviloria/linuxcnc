@@ -37,6 +37,7 @@
 #include "kinematics.h"          // KINSTYPE_IDENTITY, SWITCHKINS_MAX_TYPES
 
 #include "units.h"
+#include "emcpose.h"
 #define TOOL_INSIDE_ARC(side, turn) (((side)==CUTTER_COMP::LEFT&&(turn)>0)||((side)==CUTTER_COMP::RIGHT&&(turn)<0))
 #define DEBUG_EMC
 
@@ -2867,8 +2868,22 @@ int Interp::convert_feed_mode(int g_code,        //!< g_code being executed (mus
     enqueue_SET_FEED_MODE(settings->active_spindle , 1);
     settings->feed_rate = 0.0;
     enqueue_SET_FEED_RATE(0);
+  } else if (g_code == G_98) {
+    /* Fanuc system A: G98 is feed per minute (the LinuxCNC G94) */
+    CHKS((!settings->fanuc_lathe), "BUG: Code not G93, G94, G95, G98 or G99");
+    settings->feed_mode = FEED_MODE::UNITS_PER_MINUTE;
+    enqueue_SET_FEED_MODE(0, 0);
+    settings->feed_rate = 0.0;
+    enqueue_SET_FEED_RATE(0);
+  } else if (g_code == G_99) {
+    /* Fanuc system A: G99 is feed per revolution (the LinuxCNC G95) */
+    CHKS((!settings->fanuc_lathe), "BUG: Code not G93, G94, G95, G98 or G99");
+    settings->feed_mode = FEED_MODE::UNITS_PER_REVOLUTION;
+    enqueue_SET_FEED_MODE(settings->active_spindle , 1);
+    settings->feed_rate = 0.0;
+    enqueue_SET_FEED_RATE(0);
   } else
-    ERS("BUG: Code not G93, G94, or G95");
+    ERS("BUG: Code not G93, G94, G95, G98 or G99");
   return INTERP_OK;
 }
 
@@ -4097,6 +4112,9 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
       					       STEP_M_6,
       					       'm',
       					       block->m_modes[6]);
+	  } else if (settings->lathe_txxxx) {
+	      /* Fanuc lathe: T already changed the tool; M6 is a no-op. */
+	      CONTROLLING_BLOCK(*settings).builtin_used = !remapped_in_block;
 	  } else {
 	      // the code was used in its very remap procedure -
 	      // the 'recursion case'; record the fact
@@ -4134,7 +4152,7 @@ int Interp::convert_m(block_pointer block,       //!< pointer to a block of RS27
       }
   }
 
-  if (FEATURE(RETAIN_G43)) {
+  if (FEATURE(RETAIN_G43) && !settings->lathe_txxxx) {
 
       if ((settings->active_g_codes[9] == G_43) && ONCE(STEP_RETAIN_G43)) {
         if(settings->selected_pocket > 0) {
@@ -4423,7 +4441,8 @@ int Interp::convert_modal_0(int code,    						//!< G-code, must be from group 0
 {
 
   if (code == G_10) {
-      if(block->l_number == 1 || block->l_number == 10 || block->l_number == 11)
+      if(block->l_number == 1 || block->l_number == 10 || block->l_number == 11
+         || block->l_number == 12)
           CHP(convert_setup_tool(block, settings));
       else if (block->l_number == 0) {
           int tno = settings->tool_table[0].toolno;
@@ -4439,6 +4458,8 @@ int Interp::convert_modal_0(int code,    						//!< G-code, must be from group 0
     CHP(convert_savehome(code, block, settings));
   } else if (code == G_28_2) {
     CHP(convert_home_cycle(block, settings));
+  } else if (code == G_50) {
+    CHP(convert_fanuc_g50(block, settings));
   } else if ((code == G_52) || (code == G_92)) {
     CHP(convert_axis_offsets(code, block, settings));
   } else if ((code == G_5_3)||(code == G_6_3)) { // jjf
@@ -4501,6 +4522,27 @@ int Interp::convert_motion(int motion,   //!< g_code for a line, arc, canned cyc
   int bi = block->b_flag && (-1 != settings->b_indexer_jnum);
   int ci = block->c_flag && (-1 != settings->c_indexer_jnum);
 
+  // Fanuc lathe system A has no U/W axes: they are the incremental X/Z
+  // words, relative to the position at the start of the block.
+  if (settings->fanuc_lathe) {
+      CHKS((block->u_flag && block->x_flag),
+           _("Cannot use U and X in the same block"));
+      CHKS((block->w_flag && block->z_flag),
+           _("Cannot use W and Z in the same block"));
+      if (block->u_flag) {
+          block->x_number = settings->current_x +
+              (settings->lathe_diameter_mode ? block->u_number / 2.0
+                                             : block->u_number);
+          block->x_flag = true;
+          block->u_flag = false;
+      }
+      if (block->w_flag) {
+          block->z_number = settings->current_z + block->w_number;
+          block->z_flag = true;
+          block->w_flag = false;
+      }
+  }
+
 
   if (motion != G_0) {
       CHKS((ai), (_("Indexing axis %c can only be moved with G0")), 'A');
@@ -4539,6 +4581,8 @@ int Interp::convert_motion(int motion,   //!< g_code for a line, arc, canned cyc
     enqueue_COMMENT("interpreter: motion mode set to none");
 #endif
     settings->motion_mode = G_80;
+  } else if (settings->fanuc_lathe && is_fanuc_lathe_cycle(motion)) {
+    CHP(convert_fanuc_cycle(motion, block, settings));
   } else if (is_user_defined_g_code(motion)) {
       CHP(convert_remapped_code(block, settings, STEP_MOTION, 'g', motion));
   } else if (is_a_cycle(motion)) {
@@ -4700,6 +4744,69 @@ int Interp::convert_setup_tool(block_pointer block, setup_pointer settings) {
 
     CHP((find_tool_index(settings, toolno, &idx)));
 
+    if (block->l_number == 12) {
+        CHKS((settings->cutter_comp_side != CUTTER_COMP::OFF),
+             _("Cannot change tool wear with cutter radius compensation on"));
+        CHKS((block->x_flag && block->u_flag),
+             _("G10 L12 cannot use X and U on the same line"));
+        CHKS((block->z_flag && block->w_flag),
+             _("G10 L12 cannot use Z and W on the same line"));
+        CHKS((block->y_flag && block->v_flag),
+             _("G10 L12 cannot use Y and V on the same line"));
+        CHKS(!(block->x_flag || block->y_flag || block->z_flag ||
+               block->a_flag || block->b_flag || block->c_flag ||
+               block->u_flag || block->v_flag || block->w_flag ||
+               block->r_flag),
+             _("G10 L12 requires at least one wear value"));
+        auto &w = settings->tool_table[idx].wear;
+        if (block->x_flag)
+            w.tran.x = PROGRAM_TO_USER_LEN(block->x_number);
+        else if (block->u_flag)
+            w.tran.x += PROGRAM_TO_USER_LEN(block->u_number);
+        if (block->y_flag)
+            w.tran.y = PROGRAM_TO_USER_LEN(block->y_number);
+        else if (block->v_flag)
+            w.tran.y += PROGRAM_TO_USER_LEN(block->v_number);
+        if (block->z_flag)
+            w.tran.z = PROGRAM_TO_USER_LEN(block->z_number);
+        else if (block->w_flag)
+            w.tran.z += PROGRAM_TO_USER_LEN(block->w_number);
+        if (block->a_flag)
+            w.a = PROGRAM_TO_USER_ANG(block->a_number);
+        if (block->b_flag)
+            w.b = PROGRAM_TO_USER_ANG(block->b_number);
+        if (block->c_flag)
+            w.c = PROGRAM_TO_USER_ANG(block->c_number);
+        if (block->r_flag)
+            settings->tool_table[idx].wear_diameter =
+                PROGRAM_TO_USER_LEN(block->r_number) * 2.;
+        SET_TOOL_TABLE_ENTRY(idx,
+                             settings->tool_table[idx].toolno,
+                             settings->tool_table[idx].offset,
+                             settings->tool_table[idx].diameter,
+                             settings->tool_table[idx].frontangle,
+                             settings->tool_table[idx].backangle,
+                             settings->tool_table[idx].orientation,
+                             settings->tool_table[idx].wear,
+                             settings->tool_table[idx].wear_diameter);
+        if ((!settings->random_toolchanger) && (settings->current_pocket == idx)) {
+            settings->tool_table[0] = settings->tool_table[idx];
+            SET_TOOL_TABLE_ENTRY(0,
+                                 settings->tool_table[idx].toolno,
+                                 settings->tool_table[idx].offset,
+                                 settings->tool_table[idx].diameter,
+                                 settings->tool_table[idx].frontangle,
+                                 settings->tool_table[idx].backangle,
+                                 settings->tool_table[idx].orientation,
+                                 settings->tool_table[idx].wear,
+                                 settings->tool_table[idx].wear_diameter);
+        }
+        settings->parameters[5414] = settings->tool_table[0].wear.tran.x;
+        settings->parameters[5415] = settings->tool_table[0].wear.tran.z;
+        settings->parameters[5416] = settings->tool_table[0].wear_diameter;
+        return INTERP_OK;
+    }
+
     CHKS(!(block->x_flag || block->y_flag || block->z_flag ||
            block->a_flag || block->b_flag || block->c_flag ||
            block->u_flag || block->v_flag || block->w_flag ||
@@ -4822,7 +4929,9 @@ int Interp::convert_setup_tool(block_pointer block, setup_pointer settings) {
                          settings->tool_table[idx].diameter,
                          settings->tool_table[idx].frontangle,
                          settings->tool_table[idx].backangle,
-                         settings->tool_table[idx].orientation);
+                         settings->tool_table[idx].orientation,
+                         settings->tool_table[idx].wear,
+                         settings->tool_table[idx].wear_diameter);
 
     //
     // On non-random tool changers we just updated the tool's "home index"
@@ -4873,6 +4982,9 @@ int Interp::convert_setup_tool(block_pointer block, setup_pointer settings) {
     settings->parameters[5411] = settings->tool_table[0].frontangle;
     settings->parameters[5412] = settings->tool_table[0].backangle;
     settings->parameters[5413] = settings->tool_table[0].orientation;
+    settings->parameters[5414] = settings->tool_table[0].wear.tran.x;
+    settings->parameters[5415] = settings->tool_table[0].wear.tran.z;
+    settings->parameters[5416] = settings->tool_table[0].wear_diameter;
 
     // if the modified tool is currently in the spindle, then copy its
     // information to index 0 of the tool table (which signifies the
@@ -4885,7 +4997,9 @@ int Interp::convert_setup_tool(block_pointer block, setup_pointer settings) {
                              settings->tool_table[idx].diameter,
                              settings->tool_table[idx].frontangle,
                              settings->tool_table[idx].backangle,
-                             settings->tool_table[idx].orientation);
+                             settings->tool_table[idx].orientation,
+                             settings->tool_table[idx].wear,
+                             settings->tool_table[idx].wear_diameter);
     }
 
     return INTERP_OK;
@@ -5215,6 +5329,9 @@ int Interp::convert_spindle_mode(int dollar_number, block_pointer block, setup_p
 			if(block->d_flag) {
 				settings->css_maximum[s] = fabs(block->d_number_float);
 				enqueue_SET_SPINDLE_MODE(s, fabs(block->d_number_float));
+			} else if (settings->fanuc_lathe && settings->css_maximum[s] > 0.0) {
+				/* keep the clamp set by G50 S */
+				enqueue_SET_SPINDLE_MODE(s, settings->css_maximum[s]);
 			} else {
 				settings->css_maximum[s] = 0.0;
 				enqueue_SET_SPINDLE_MODE(s, 1e30);
@@ -5626,6 +5743,19 @@ int Interp::convert_straight(int move,   //!< either G_0 or G_1
   settings->motion_mode = move;
   CHP(find_ends(block, settings, &end_x, &end_y, &end_z,
                 &AA_end, &BB_end, &CC_end, &u_end, &v_end, &w_end));
+
+  // Fanuc lathe cycles keep the programmed X/Z words as their own modal
+  // values, separate from the cycle start point the tool returns to.
+  if (settings->fanuc_lathe && (move == G_0 || move == G_1)) {
+      if (block->x_flag) {
+          settings->fanuc_cycle_x = end_x;
+          settings->fanuc_cycle_x_set = true;
+      }
+      if (block->z_flag) {
+          settings->fanuc_cycle_z = end_z;
+          settings->fanuc_cycle_z_set = true;
+      }
+  }
 
   if (move == G_1) {
       inverse_time_rate_straight(end_x, end_y, end_z,
@@ -6554,6 +6684,18 @@ int Interp::convert_tool_length_offset(int g_code,       //!< g_code being execu
     tool_offset.u = USER_TO_PROGRAM_LEN(settings->tool_table[idx].offset.u);
     tool_offset.v = USER_TO_PROGRAM_LEN(settings->tool_table[idx].offset.v);
     tool_offset.w = USER_TO_PROGRAM_LEN(settings->tool_table[idx].offset.w);
+    if (settings->lathe_txxxx) {
+        const EmcPose &w = settings->tool_table[idx].wear;
+        tool_offset.tran.x += USER_TO_PROGRAM_LEN(w.tran.x);
+        tool_offset.tran.y += USER_TO_PROGRAM_LEN(w.tran.y);
+        tool_offset.tran.z += USER_TO_PROGRAM_LEN(w.tran.z);
+        tool_offset.a += USER_TO_PROGRAM_ANG(w.a);
+        tool_offset.b += USER_TO_PROGRAM_ANG(w.b);
+        tool_offset.c += USER_TO_PROGRAM_ANG(w.c);
+        tool_offset.u += USER_TO_PROGRAM_LEN(w.u);
+        tool_offset.v += USER_TO_PROGRAM_LEN(w.v);
+        tool_offset.w += USER_TO_PROGRAM_LEN(w.w);
+    }
     settings->g43_with_zero_offset =
       !(tool_offset.tran.x || tool_offset.tran.y || tool_offset.tran.z ||
         tool_offset.a || tool_offset.b || tool_offset.c ||
@@ -6670,14 +6812,134 @@ A zero t_number is allowed and means no tool should be selected.
 
 // OK to select tool in a concave corner, I think?
 
+static int decode_lathe_tword(int raw, int *tool, int *offset)
+{
+    const int digits = 2;
+    int mod = 1;
+    for (int i = 0; i < digits; i++)
+        mod *= 10;
+    if (raw == 0) {
+        *tool = 0;
+        *offset = 0;
+        return INTERP_OK;
+    }
+    if (raw < 0)
+        return INTERP_ERROR;
+    if (raw < mod) {
+        /* T1 ≡ T0101 */
+        *tool = raw;
+        *offset = raw;
+        return INTERP_OK;
+    }
+    *tool = raw / mod;
+    *offset = raw % mod;
+    if (*tool <= 0)
+        return INTERP_ERROR;
+    return INTERP_OK;
+}
+
+static int pocket_for_toolno(setup_pointer settings, int toolno)
+{
+    if (toolno <= 0)
+        return -1;
+    for (int i = 0; i < CANON_POCKETS_MAX; i++) {
+        if (settings->tool_table[i].toolno == toolno)
+            return i;
+    }
+    return -1;
+}
+
 int Interp::convert_tool_select(block_pointer block,     //!< pointer to a block of RS274 instructions
                                setup_pointer settings)  //!< pointer to machine settings
 {
   int idx;
-  CHP((find_tool_index(settings, block->t_number, &idx)));
-  SELECT_TOOL(block->t_number);
+  if (!settings->lathe_txxxx) {
+      CHP((find_tool_index(settings, block->t_number, &idx)));
+      SELECT_TOOL(block->t_number);
+      settings->selected_pocket = idx;
+      settings->selected_tool = block->t_number;
+      return INTERP_OK;
+  }
+
+  CHKS((settings->cutter_comp_side != CUTTER_COMP::OFF),
+       (_("Cannot change tools with cutter radius compensation on")));
+
+  int tool = 0, offset = 0;
+  CHKS((decode_lathe_tword(block->t_number, &tool, &offset) != INTERP_OK),
+       _("T%d is not a valid lathe Taa ww word"), block->t_number);
+
+  CHP((find_tool_index(settings, tool, &idx)));
+  SELECT_TOOL(tool);
   settings->selected_pocket = idx;
-  settings->selected_tool = block->t_number;
+  settings->selected_tool = tool;
+
+  bool already = (settings->tool_table[0].toolno == tool);
+  if (!already) {
+      CHP(convert_tool_change(settings));
+  } else {
+      settings->current_pocket = idx;
+  }
+
+  EmcPose tool_offset;
+  ZERO_EMC_POSE(tool_offset);
+  if (offset == 0) {
+      settings->g43_with_zero_offset = 0;
+  } else {
+      int geom_idx = settings->current_pocket;
+      if (geom_idx < 0)
+          geom_idx = idx;
+      tool_offset.tran.x = USER_TO_PROGRAM_LEN(settings->tool_table[geom_idx].offset.tran.x);
+      tool_offset.tran.y = USER_TO_PROGRAM_LEN(settings->tool_table[geom_idx].offset.tran.y);
+      tool_offset.tran.z = USER_TO_PROGRAM_LEN(settings->tool_table[geom_idx].offset.tran.z);
+      tool_offset.a = USER_TO_PROGRAM_ANG(settings->tool_table[geom_idx].offset.a);
+      tool_offset.b = USER_TO_PROGRAM_ANG(settings->tool_table[geom_idx].offset.b);
+      tool_offset.c = USER_TO_PROGRAM_ANG(settings->tool_table[geom_idx].offset.c);
+      tool_offset.u = USER_TO_PROGRAM_LEN(settings->tool_table[geom_idx].offset.u);
+      tool_offset.v = USER_TO_PROGRAM_LEN(settings->tool_table[geom_idx].offset.v);
+      tool_offset.w = USER_TO_PROGRAM_LEN(settings->tool_table[geom_idx].offset.w);
+      int wear_idx = pocket_for_toolno(settings, offset);
+      if (wear_idx >= 0) {
+          const EmcPose &w = settings->tool_table[wear_idx].wear;
+          tool_offset.tran.x += USER_TO_PROGRAM_LEN(w.tran.x);
+          tool_offset.tran.y += USER_TO_PROGRAM_LEN(w.tran.y);
+          tool_offset.tran.z += USER_TO_PROGRAM_LEN(w.tran.z);
+          tool_offset.a += USER_TO_PROGRAM_ANG(w.a);
+          tool_offset.b += USER_TO_PROGRAM_ANG(w.b);
+          tool_offset.c += USER_TO_PROGRAM_ANG(w.c);
+          tool_offset.u += USER_TO_PROGRAM_LEN(w.u);
+          tool_offset.v += USER_TO_PROGRAM_LEN(w.v);
+          tool_offset.w += USER_TO_PROGRAM_LEN(w.w);
+      }
+      settings->g43_with_zero_offset =
+        !(tool_offset.tran.x || tool_offset.tran.y || tool_offset.tran.z ||
+          tool_offset.a || tool_offset.b || tool_offset.c ||
+          tool_offset.u || tool_offset.v || tool_offset.w);
+  }
+
+  USE_TOOL_LENGTH_OFFSET(tool_offset);
+  double dx, dy;
+  dx = settings->tool_offset.tran.x - tool_offset.tran.x;
+  dy = settings->tool_offset.tran.y - tool_offset.tran.y;
+  rotate(&dx, &dy, -settings->rotation_xy);
+  settings->current_x += dx;
+  settings->current_y += dy;
+  settings->current_z += settings->tool_offset.tran.z - tool_offset.tran.z;
+  settings->AA_current += settings->tool_offset.a - tool_offset.a;
+  settings->BB_current += settings->tool_offset.b - tool_offset.b;
+  settings->CC_current += settings->tool_offset.c - tool_offset.c;
+  settings->u_current += settings->tool_offset.u - tool_offset.u;
+  settings->v_current += settings->tool_offset.v - tool_offset.v;
+  settings->w_current += settings->tool_offset.w - tool_offset.w;
+  settings->tool_offset = tool_offset;
+  settings->parameters[5081] = PROGRAM_TO_USER_LEN(tool_offset.tran.x);
+  settings->parameters[5082] = PROGRAM_TO_USER_LEN(tool_offset.tran.y);
+  settings->parameters[5083] = PROGRAM_TO_USER_LEN(tool_offset.tran.z);
+  settings->parameters[5084] = PROGRAM_TO_USER_ANG(tool_offset.a);
+  settings->parameters[5085] = PROGRAM_TO_USER_ANG(tool_offset.b);
+  settings->parameters[5086] = PROGRAM_TO_USER_ANG(tool_offset.c);
+  settings->parameters[5087] = PROGRAM_TO_USER_LEN(tool_offset.u);
+  settings->parameters[5088] = PROGRAM_TO_USER_LEN(tool_offset.v);
+  settings->parameters[5089] = PROGRAM_TO_USER_LEN(tool_offset.w);
   return INTERP_OK;
 }
 

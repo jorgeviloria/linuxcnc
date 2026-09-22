@@ -29,6 +29,17 @@
 
 using namespace linuxcnc;
 
+// Legacy T10000+ wear rows are only meaningful with Fanuc lathe T words.
+static void migrate_legacy_wear_if_enabled(void)
+{
+    if (!emc_inifile[0]) return;
+    IniFile inifile(emc_inifile);
+    if (!inifile) return;
+    if (auto v = inifile.findBool("LATHE_TXXXX", "RS274NGC")) {
+        if (*v) tooldata_migrate_legacy_wear();
+    }
+}
+
 /********************************************************************
 *
 * Description: iocontrol_hal_init(void)
@@ -63,6 +74,8 @@ int Task::iocontrol_hal_init(void)
     CHK(hal_pin_new_bool(comp_id, HAL_IN,  &iocontrol_data->tool_prepared,    0, IOC0".tool-prepared"));
     CHK(hal_pin_new_bool(comp_id, HAL_OUT, &iocontrol_data->tool_change,      0, IOC0".tool-change"));
     CHK(hal_pin_new_bool(comp_id, HAL_IN,  &iocontrol_data->tool_changed,     0, IOC0".tool-changed"));
+    CHK(hal_pin_new_bool(comp_id, HAL_IN,  &iocontrol_data->toolchanger_fault, 0, IOC0".toolchanger-fault"));
+    CHK(hal_pin_new_si32(comp_id, HAL_IN,  &iocontrol_data->toolchanger_reason, 0, IOC0".toolchanger-reason"));
     if(hal_ready(comp_id) < 0) {
         hal_exit(comp_id);
         comp_id = -1;
@@ -115,9 +128,11 @@ int emcToolLoad() { return task_methods->emcToolLoad(); }
 int emcToolUnload()  { return task_methods->emcToolUnload(); }
 int emcToolLoadToolTable(const char *file) { return task_methods->emcToolLoadToolTable(file); }
 int emcToolSetOffset(int pocket, int toolno, const EmcPose& offset, double diameter,
-                     double frontangle, double backangle, int orientation) {
+                     double frontangle, double backangle, int orientation,
+                     const EmcPose& wear, double wear_diameter, int set_wear) {
     return task_methods->emcToolSetOffset( pocket,  toolno,  offset,  diameter,
-					   frontangle,  backangle,  orientation); }
+					   frontangle,  backangle,  orientation,
+					   wear, wear_diameter, set_wear); }
 int emcToolSetNumber(int number) { return task_methods->emcToolSetNumber(number); }
 
 int emcTaskOnce(const char * /*filename*/, EMC_IO_STAT &emcioStatus)
@@ -217,6 +232,7 @@ Task::Task(EMC_IO_STAT & emcioStatus_in) :
     if (0 != tooldata_load(tooltable_filename)) {
         rcs_print_error("can't load tool table.\n");
     }
+    migrate_legacy_wear_if_enabled();
 
     if (random_toolchanger) {
         CANON_TOOL_TABLE tdata;
@@ -378,6 +394,7 @@ void Task::reload_tool_number(int toolno) {
 int Task::emcIoInit()//EMC_TOOL_INIT
 {
     tooldata_load(tooltable_filename);
+    migrate_legacy_wear_if_enabled();
     reload_tool_number(emcioStatus.tool.toolInSpindle);
 
     if (0 != iniTool(emc_inifile)) {
@@ -549,12 +566,14 @@ int Task::emcToolLoadToolTable(const char *file)//EMC_TOOL_LOAD_TOOL_TABLE_TYPE
 {
     if(!strlen(file)) file = tooltable_filename;//use filename from ini if none is provided
     tooldata_load(file);
+    migrate_legacy_wear_if_enabled();
     reload_tool_number(emcioStatus.tool.toolInSpindle);
     return 0;
 }
 
 int Task::emcToolSetOffset(int idx, int toolno, const EmcPose& offset, double diameter,
-                     double frontangle, double backangle, int orientation)//EMC_TOOL_SET_OFFSET
+                     double frontangle, double backangle, int orientation,
+                     const EmcPose& wear, double wear_diameter, int set_wear)//EMC_TOOL_SET_OFFSET
 {
 
     int o;
@@ -580,6 +599,10 @@ int Task::emcToolSetOffset(int idx, int toolno, const EmcPose& offset, double di
     tdata.frontangle = f;
     tdata.backangle = b;
     tdata.orientation = o;
+    if (set_wear) {
+        tdata.wear = wear;
+        tdata.wear_diameter = wear_diameter;
+    }
     if (tooldata_put(tdata,idx) != IDX_OK) {
         UNEXPECTED_MSG;
     }
@@ -643,6 +666,20 @@ int Task::emcToolSetNumber(int number)//EMC_TOOL_SET_NUMBER
 ********************************************************************/
 int Task::read_tool_inputs(void)
 {
+    // Toolchanger fault/reason driven by the tool change logic; exposed as
+    // #5600/#5601 for diagnostics.  The IO state machine is deliberately
+    // left alone: while the fault is active the pending change never
+    // completes (the task keeps waiting for tool-prepared/tool-changed),
+    // so the program pauses until the fault is reset and the change is
+    // finished (or the operator stops it).
+    if (hal_get_bool(iocontrol_data->toolchanger_fault)) {
+        emcioStatus.fault = 1;
+        emcioStatus.reason = hal_get_si32(iocontrol_data->toolchanger_reason);
+    } else if (emcioStatus.fault) {
+        emcioStatus.fault = 0;
+        emcioStatus.reason = 0;
+    }
+
     if (hal_get_bool(iocontrol_data->tool_prepare) && hal_get_bool(iocontrol_data->tool_prepared)) {
         emcioStatus.tool.pocketPrepped = hal_get_si32(iocontrol_data->tool_prep_index); //check if tool has been (idx) prepared
         hal_set_bool(iocontrol_data->tool_prepare, 0);

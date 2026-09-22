@@ -1,0 +1,9 @@
+;G7X error: arc radius too small to reach the end point
+G18 G21 G90 F100
+G0 X12 Z1
+G71.3 P10 Q20 I2 R0.5
+N10 G0 X6
+G1 Z-5
+G2 X20 Z-10 R1
+N20 X12
+M2

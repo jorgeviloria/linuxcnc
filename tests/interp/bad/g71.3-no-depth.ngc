@@ -1,0 +1,8 @@
+;G71.3 requires depth of cut (U on the parameter line or I on the execute line)
+G18 G21 F100
+G0 X12 Z1
+G71.3 P10 Q20
+N10 G0 X6
+G1 Z-10
+N20 X12
+M2

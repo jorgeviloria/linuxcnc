@@ -311,8 +311,12 @@ int Interp::_execute(const char *command)
 	   eblock->call_type < 0 ? "*unset*" : call_typenames[eblock->call_type], 
 	   call_statenames[_setup.call_state]);
 
+  bool g7x_skipping = g7x_skip_this_block(eblock, &_setup);
+
   // process control functions -- will skip if skipping
-  if ((eblock->o_name != NULL) || _setup.mdi_interrupt)  {
+  // G71.3/G70.3 P-Q skip must win: O-words inside the profile must not
+  // run (CALL/IF/GOTO would bypass execute_block and leave skip stuck).
+  if (!g7x_skipping && ((eblock->o_name != NULL) || _setup.mdi_interrupt))  {
       status = convert_control_functions(eblock, &_setup);
       CHP(status); // relinquish control if INTERP_EXECUTE_FINISH, INTERP_ERROR etc
       
@@ -357,6 +361,13 @@ int Interp::_execute(const char *command)
       logDebug("skipping to: %s", _setup.skipping_o);
       return INTERP_OK;
     }
+
+  /* G71.3/G70.3 P-Q skip: do not apply # assignments on those lines.
+     Includes N(P); execute_block consumes the skip at N(Q). */
+  if (g7x_skipping) {
+    _setup.parameter_occurrence = 0;
+    _setup.named_parameter_occurrence = 0;
+  }
 
   for (n = 0; n < _setup.parameter_occurrence; n++)
   {  // copy parameter settings from parameter buffer into parameter table
@@ -1244,6 +1255,7 @@ int Interp::init()
 
   // initialization stuff for subroutines and control structures
   _setup.call_level = 0;
+  _setup.call_stack_id = 0;
   _setup.defining_sub = 0;
   _setup.skipping_o = NULL;
   _setup.offset_map.clear();
@@ -1793,6 +1805,10 @@ int Interp::unwind_call(int status, const char *file, int line, const char *func
 	_setup.sub_name = NULL;
     }
     _setup.remap_level = 0; // reset remapping stack
+    // back at the main program; nodes already in the ring stay resolvable for
+    // moves still queued or executing
+    _setup.call_stack_id = 0;
+
     _setup.defining_sub = 0;
     _setup.skipping_o = NULL;
     _setup.skipping_to_sub = NULL;
@@ -1856,6 +1872,19 @@ int Interp::reset()
     ON_RESET();
     
     unwind_call(INTERP_OK, __FILE__,__LINE__,__FUNCTION__);
+    _setup.g71_3_delta = 0.0;
+    _setup.g71_3_retract = 0.5;
+    _setup.g71_3_have_delta = false;
+    _setup.g71_3_have_retract = false;
+    _setup.g7x_skip_n_start = -1;
+    _setup.g7x_skip_n_end = -1;
+    _setup.g7x_skip_active = false;
+    _setup.g7x_profile_valid = false;
+    _setup.g7x_profile_file[0] = 0;
+    _setup.g7x_profile_p_pos = -1;
+    _setup.g7x_profile_q_pos = -1;
+    _setup.g7x_profile_p = -1;
+    _setup.g7x_profile_q = -1;
     return INTERP_OK;
 }
 

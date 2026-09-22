@@ -535,6 +535,7 @@ interpret_again:
 			    emcStatus->task.execState ==
 			    EMC_TASK_EXEC::DONE) {
 			    emcTaskPlanClearWait();
+			    goto interpret_again;
 			 }
 		    } else {
 			readRetval = emcTaskPlanRead();
@@ -2752,7 +2753,9 @@ static int emcTaskExecute(void)
 		if (NULL != emcTaskCommand) {
 		    emcTaskEager = 1;
 		    emcStatus->task.currentLine = interp_list.get_line_number();
-		    emcStatus->task.callLevel = emcTaskPlanLevel();
+		    // callLevel is set by emcTaskUpdate() from the executing
+		    // move's StateTag; the interpreter's live level at dequeue
+		    // time leads motion by the whole read-ahead queue.
 		    // and set it for all subsystems which use queued ids
 		    emcTrajSetMotionId(emcStatus->task.currentLine);
 		    if (emcStatus->motion.traj.queueFull) {
@@ -2879,6 +2882,7 @@ static int emcTaskExecute(void)
 			emcStatus->motion.traj.switchkins_changed = false;
 			emcTaskPlanSynch();
 			emcStatus->task.execState = EMC_TASK_EXEC::DONE;
+			emcTaskEager = 1;
 		}
 		break;
 	}

@@ -232,12 +232,40 @@ error message.
 
 */
 
+bool Interp::g7x_skip_this_block(block_pointer block, setup_pointer settings)
+{
+  if (settings->g7x_skip_n_end < 0)
+    return false;
+  if (!settings->g7x_skip_active &&
+      block->n_number == settings->g7x_skip_n_start)
+    settings->g7x_skip_active = true;
+  return settings->g7x_skip_active;
+}
+
+void Interp::g7x_finish_profile_skip(block_pointer block, setup_pointer settings)
+{
+  if (!settings->g7x_skip_active)
+    return;
+  if (block->n_number == settings->g7x_skip_n_end) {
+    settings->g7x_skip_active = false;
+    settings->g7x_skip_n_start = -1;
+    settings->g7x_skip_n_end = -1;
+  }
+}
+
 int Interp::execute_block(block_pointer block,   //!< pointer to a block of RS274/NGC instructions
 			  setup_pointer settings) //!< pointer to machine settings
 {
   int status = INTERP_EXIT;
 
   block->line_number = settings->sequence_number;
+
+  /* After G71.3/G70.3 the P-Q profile is definition only. */
+  if (g7x_skip_this_block(block, settings)) {
+    g7x_finish_profile_skip(block, settings);
+    return INTERP_OK;
+  }
+
   if ((block->comment[0] != 0) && ONCE(STEP_COMMENT)) {
     status = convert_comment(block->comment);
     CHP(status);

@@ -264,11 +264,12 @@ int Interp::check_other_codes(block_pointer block)       //!< pointer to a block
   if (block->d_flag) {
     CHKS(((block->g_modes[7] != G_41) && (block->g_modes[7] != G_42) &&
         (block->g_modes[7] != G_41_1) && (block->g_modes[7] != G_42_1) &&
-        (motion != G_70) && (motion != G_71) && (motion != G_71_1) &&
-        (motion != G_71_2) && (motion != G_72) && (motion != G_72_1) &&
+        (motion != G_70) && (motion != G_70_3) && (motion != G_71) && (motion != G_71_1) &&
+        (motion != G_71_2) && (motion != G_71_3) && (motion != G_72) && (motion != G_72_1) &&
         (motion != G_72_2) && (motion != G_73) && (motion != G_83) &&
         (block->g_modes[14] != G_96)),
-        _("D word with no G41, G41.1, G42, G42.1, G71, G71.1, G71.2 G73, G83 or G96 to use it"));
+        _("D word with no G41, G41.1, G42, G42.1, G70, G70.3, G71, G71.1, G71.2, G71.3, "
+          "G72, G72.1, G72.2, G73, G83 or G96 to use it"));
   }
 
   if (block->dollar_flag) {
@@ -298,9 +299,11 @@ int Interp::check_other_codes(block_pointer block)       //!< pointer to a block
     CHKS(((motion != G_2) && (motion != G_3) && (motion != G_5) && (motion != G_5_1) &&
 					(motion != G_6) && (motion != G_6_1) &&
           (motion != G_71) && (motion != G_71_1) && (motion != G_71_2) &&
+          (motion != G_71_3) &&
           (motion != G_72) && (motion != G_72_1) && (motion != G_72_2) &&
           (motion != G_76) && (motion != G_87) && (motion != G_33_1) && (block->g_modes[GM_MODAL_0] != G_10)),
-        _("I word with no G2, G3, G5, G5.1, G6, G6.1, G10, G33.1, G76, or G87 to use it"));
+        _("I word with no G2, G3, G5, G5.1, G6, G6.1, G10, G33.1, G71, G71.1, G71.2, "
+          "G71.3, G72, G72.1, G72.2, G76, or G87 to use it"));
   }
 
   if (block->j_flag) {    /* could still be useless if xz_plane arc */
@@ -332,7 +335,7 @@ int Interp::check_other_codes(block_pointer block)       //!< pointer to a block
       CHKS(((block->g_modes[GM_MODAL_0] != G_10) && (block->g_modes[GM_MODAL_0] != G_4) && (block->g_modes[GM_CONTROL_MODE] != G_64 && (block->g_modes[GM_MODAL_0] != G_12_1)) &&
           (motion != G_76) && (motion != G_82) && (motion != G_86) && (motion != G_88) &&
           (motion != G_89) && (motion != G_5) && (motion != G_5_2) &&
-          (motion != G_70) &&
+          (motion != G_70) && (motion != G_70_3) && (motion != G_71_3) &&
 					(motion != G_6) && (motion != G_6_2) &&
           (motion != G_2) && (motion != G_3) &&
 	  (motion != G_74) && (motion != G_84) &&
@@ -342,7 +345,8 @@ int Interp::check_other_codes(block_pointer block)       //!< pointer to a block
           (block->m_modes[5] != 64) && (block->m_modes[5] != 65) && (block->m_modes[5] != 66) &&
           (block->m_modes[7] != 19) && (block->user_m != 1) &&
           (block->o_type != M_98)),
-          _("P word with no G2 G3 G4 G10 G12.1 G64 G5 G5.2 G6, G6.2, G76 G82 G86 G88 G89"
+          _("P word with no G2 G3 G4 G10 G12.1 G64 G5 G5.2 G6, G6.2, G70, G70.3, G71.3, "
+            "G76 G82 G86 G88 G89"
             " G28.2"
             " or M50 M51 M52 M53 M62 M63 M64 M65 M66 M98 "
             "or user M code to use it"));
@@ -360,17 +364,20 @@ int Interp::check_other_codes(block_pointer block)       //!< pointer to a block
       CHKS((motion != G_83) && (motion != G_73) && (motion != G_5) && (motion != G_6) && (motion != G_6_2) && (block->user_m != 1) && (motion != G_76) &&
 	   (block->m_modes[5] != 66) && (block->m_modes[5] != 67) && (block->m_modes[5] != 68) &&
 	   (block->g_modes[GM_MODAL_0] != G_10) && (block->m_modes[6] != 61) && (block->g_modes[GM_CONTROL_MODE] != G_64) &&
-	   (motion != G_70) &&
+	   (motion != G_70) && (motion != G_70_3) &&
 	   (motion != G_71) && (motion != G_71_1) && (motion != G_71_2) &&
+	   (motion != G_71_3) &&
 	   (motion != G_72) && (motion != G_72_1) && (motion != G_72_2) &&
 	   (block->m_modes[7] != 19),
-	   _("Q word with no G5, G6, G10, G64, G73, G76, G83, M19, M66, M67, M68 or user M code that uses it"));
+	   _("Q word with no G5, G6, G10, G64, G70, G70.3, G71, G71.1, G71.2, G71.3, "
+	     "G72, G72.1, G72.2, G73, G76, G83, M19, M66, M67, M68 or user M code that uses it"));
   }
 
   if (block->r_flag) {
     CHKS(((motion != G_2) && (motion != G_3) && (motion != G_76) && (motion != G_6_2) &&
          (motion != G_90) &&
          (motion != G_71) && (motion != G_71_1) && (motion != G_71_2) &&
+         (motion != G_71_3) &&
          (motion != G_72) && (motion != G_72_1) && (motion != G_72_2) &&
          ((motion < G_81) || (motion > G_89)) && (motion != G_73) &&
 	 (motion != G_74) &&

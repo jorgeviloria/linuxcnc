@@ -20,6 +20,7 @@
 #include <stdio.h>
 #include <set>
 #include <map>
+#include <vector>
 #include <bitset>
 #include "nml_intf/canon.hh"
 #include <emcpos.h>
@@ -266,9 +267,11 @@ enum GCodes
     G_61_1 = 611,
     G_64 = 640,
     G_70 = 700,
+    G_70_3 = 703,
     G_71 = 710,
     G_71_1 = 711,
     G_71_2 = 712,
+    G_71_3 = 713,
     G_72 = 720,
     G_72_1 = 721,
     G_72_2 = 722,
@@ -634,6 +637,26 @@ struct context_struct {
 #define CONTEXT_RESTORE_ON_RETURN 2 // automatically execute M71 on sub return
 #define REMAP_FRAME   4 // a remap call frame
 
+// Number of call-stack nodes kept for after-the-fact stack resolution.
+// The interpreter reads ahead of motion, so a node
+// must stay resolvable from the moment it is stamped into a StateTag until the
+// corresponding move has finished executing.  16384 nodes covers far more
+// subroutine calls than can be in flight through interp_list plus the motion
+// queue, and costs ~512kB of ordinary (non-realtime) memory.
+#define INTERP_CALL_STACK_NODES 16384
+
+// One entry of the interpreter call stack, recorded as a link to its caller so
+// that a complete stack can be recovered later from a single integer id.
+// Both strings are interned by strstore() and therefore valid for the lifetime
+// of the process, so nodes store pointers rather than copies.
+struct call_stack_node {
+    int id;                   // monotonic id of this node; 0 is the reserved root
+    int parent;               // id of the calling node; 0 at the outermost level
+    const char *filename;     // file containing the call site
+    const char *subName;      // name of the subroutine that was entered
+    int sequence_number;      // line number of the call site
+};
+
 struct offset_struct {
   int type;
   const char *filename;  // the name of the file
@@ -803,6 +826,9 @@ struct setup
   int value_returned;                // the last NGC procedure did/did not return a value
   int call_level;                    // current subroutine level
   context sub_context[INTERP_SUB_ROUTINE_LEVELS];
+  int call_stack_id;                 // id of the current call-stack node, 0 == main
+  int call_stack_next_id;            // next node id to hand out
+  std::vector<call_stack_node> call_stack_nodes;  // ring of INTERP_CALL_STACK_NODES
   int call_state;                  //  enum call_states - indicate Py handler reexecution
   offset_map_type offset_map;      // store label x name, file, line
 
@@ -859,6 +885,22 @@ struct setup
   double center_z;
   double normal_heading;
   bool iscircle;
+
+  /* Fanuc-style G71.3 parameter line (U/R) and P-Q profile skip */
+  double g71_3_delta;
+  double g71_3_retract;
+  bool g71_3_have_delta;
+  bool g71_3_have_retract;
+  int g7x_skip_n_start;
+  int g7x_skip_n_end;
+  bool g7x_skip_active;
+  /* Range found by G71.3, reused by G70.3 with the same P/Q numbers */
+  bool g7x_profile_valid;
+  char g7x_profile_file[LINELEN];
+  long g7x_profile_p_pos;
+  long g7x_profile_q_pos;
+  int g7x_profile_p;
+  int g7x_profile_q;
 
 #define FEATURE(x) (_setup.feature_set & FEATURE_ ## x)
 #define FEATURE_RETAIN_G43           0x00000001

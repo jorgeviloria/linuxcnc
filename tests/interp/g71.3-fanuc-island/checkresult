@@ -1,0 +1,32 @@
+#!/usr/bin/env python3
+"""Type II: rapids crossing the island must travel at the clearance X."""
+import re
+import sys
+
+text = open(sys.argv[1] if len(sys.argv) > 1 else "result").read()
+if "STRAIGHT_FEED" not in text:
+    print("no STRAIGHT_FEED in output")
+    sys.exit(1)
+clear = 15.0
+# Island between Z=-15 and Z=-10 holds material above X=10.  A rapid that
+# only *ends* outside the band can still cross it diagonally, so sample the
+# whole segment between the previous position and this move.
+bad = []
+pos = None
+for m in re.finditer(
+        r"STRAIGHT_(TRAVERSE|FEED)\(([-\d.]+),\s*[-\d.]+,\s*([-\d.]+)", text):
+    kind, x, z = m.group(1), float(m.group(2)), float(m.group(3))
+    if kind == "TRAVERSE" and pos is not None:
+        x0, z0 = pos
+        for i in range(21):
+            t = i / 20.0
+            xs = x0 + t * (x - x0)
+            zs = z0 + t * (z - z0)
+            if -14.99 < zs < -10.01 and xs < clear - 0.01:
+                bad.append((round(xs, 2), round(zs, 2)))
+                break
+    pos = (x, z)
+if bad:
+    print("rapid crosses the island at %s (want X>=%s at clearance)" % (bad[:4], clear))
+    sys.exit(1)
+sys.exit(0)

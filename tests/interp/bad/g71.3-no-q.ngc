@@ -1,0 +1,5 @@
+;G71.3 execute line requires P and Q sequence numbers
+G18 G21 F100
+G0 X12 Z1
+G71.3 P10 I1
+M2

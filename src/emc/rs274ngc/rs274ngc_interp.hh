@@ -234,6 +234,8 @@ public:
  int convert_nurbs(int move, block_pointer block, setup_pointer settings);
  int convert_spline(int move, block_pointer block, setup_pointer settings);
  int convert_g7x(int move, block_pointer block, setup_pointer settings);
+ bool g7x_skip_this_block(block_pointer block, setup_pointer settings);
+ void g7x_finish_profile_skip(block_pointer block, setup_pointer settings);
  int comp_get_current(setup_pointer settings, double *x, double *y, double *z);
  int comp_set_current(setup_pointer settings, double x, double y, double z);
  int comp_get_programmed(setup_pointer settings, double *x, double *y, double *z);

@@ -267,9 +267,11 @@ enum GCodes
     G_61_1 = 611,
     G_64 = 640,
     G_70 = 700,
+    G_70_3 = 703,
     G_71 = 710,
     G_71_1 = 711,
     G_71_2 = 712,
+    G_71_3 = 713,
     G_72 = 720,
     G_72_1 = 721,
     G_72_2 = 722,
@@ -874,6 +876,22 @@ struct setup
   double center_z;
   double normal_heading;
   bool iscircle;
+
+  /* Fanuc-style G71.3 parameter line (U/R) and P-Q profile skip */
+  double g71_3_delta;
+  double g71_3_retract;
+  bool g71_3_have_delta;
+  bool g71_3_have_retract;
+  int g7x_skip_n_start;
+  int g7x_skip_n_end;
+  bool g7x_skip_active;
+  /* Range found by G71.3, reused by G70.3 with the same P/Q numbers */
+  bool g7x_profile_valid;
+  char g7x_profile_file[LINELEN];
+  long g7x_profile_p_pos;
+  long g7x_profile_q_pos;
+  int g7x_profile_p;
+  int g7x_profile_q;
 
 #define FEATURE(x) (_setup.feature_set & FEATURE_ ## x)
 #define FEATURE_RETAIN_G43           0x00000001

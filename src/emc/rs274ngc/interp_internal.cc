@@ -190,8 +190,9 @@ int Interp::enhance_block(block_pointer block,   //!< pointer to a block to be c
             mode1 != G_2 && mode1 != G_3 && 
             mode1 != G_5_2 &&
             mode1 != G_6_2 &&
-            mode1 != G_70 &&
+            mode1 != G_70 && mode1 != G_70_3 &&
             mode1 != G_71 && mode1 != G_71_1 && mode1 != G_71_2 &&
+            mode1 != G_71_3 &&
             mode1 != G_72 && mode1 != G_72_1 && mode1 != G_72_2 &&
                   !is_user_defined_g_code(mode1)),
           NCE_ALL_AXES_MISSING_WITH_MOTION_CODE);

@@ -1207,6 +1207,14 @@ int Interp::read_one_item(
   CHKS(((letter < ' ') || (letter > 'z')),
 	_("Bad character '\\%03o' used"), (unsigned char)letter);
   function_pointer = _readers[(int) letter]; /* Find the function pointer in the array */
+  /* Fanuc G70.3/G71.3 use U/W as cycle words, never as extra axes.
+     Force the stock readers even if the axis mask has no U/W (NULL)
+     or a config remapped those letters. G must already have been
+     seen on this line (Fanuc writes G before U/W). */
+  if ((letter == 'u' || letter == 'w') &&
+      (block->g_modes[GM_MOTION] == G_70_3 ||
+       block->g_modes[GM_MOTION] == G_71_3))
+      function_pointer = default_readers[(int) letter];
   CHKS((function_pointer == NULL),
 	(!isprint(letter) || isspace(letter)) ?
 	    _("Bad character '\\%03o' used") : _("Bad character '%c' used"), letter);

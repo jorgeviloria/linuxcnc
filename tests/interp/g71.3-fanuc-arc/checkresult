@@ -1,0 +1,17 @@
+#!/usr/bin/env python3
+"""P on G71.3 must not become ARC_FEED turn count (spiral of 10 turns)."""
+import re
+import sys
+
+text = open(sys.argv[1] if len(sys.argv) > 1 else "result").read()
+feeds = list(re.finditer(r"ARC_FEED\(([^)]+)\)", text))
+if not feeds:
+    print("no ARC_FEED in output")
+    sys.exit(1)
+for m in feeds:
+    parts = [p.strip() for p in m.group(1).split(",")]
+    turn = float(parts[4])
+    if abs(turn) > 1.5:
+        print("ARC_FEED turn=%s (P word leaked as spiral turns)" % parts[4])
+        sys.exit(1)
+sys.exit(0)

@@ -1,0 +1,12 @@
+#!/bin/bash
+set -e
+result=${1:-result}
+grep -q 'STRAIGHT_FEED(8.0000' "$result" || {
+    echo "expected roughing feed at X=8 (G8 U=2 radius allowance)"
+    exit 1
+}
+if grep -q 'STRAIGHT_FEED(7.0000' "$result"; then
+    echo "X=7 feed suggests U was halved in G8 (bug)"
+    exit 1
+fi
+exit 0

@@ -1,0 +1,9 @@
+#!/bin/bash
+set -e
+result=${1:-result}
+# Canon X is radius: envelope 8 after U4 diameter = 2 radius
+grep -q 'STRAIGHT_FEED(8.0000' "$result" || {
+    echo "expected roughing feed at radius X=8 (G7 U=4 diameter allowance)"
+    exit 1
+}
+exit 0
